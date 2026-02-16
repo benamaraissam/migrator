@@ -915,10 +915,16 @@ async function sendChatMessage() {
 
 let streamLines = [];
 let streamTokens = "";
+let streamTokenFlushScheduled = false;
+let streamTokenLastFlush = 0;
+const STREAM_MAX_DISPLAY_CHARS = 12000; // Cap visible chars to avoid DOM freeze
+const STREAM_FLUSH_INTERVAL_MS = 80; // Throttle DOM updates to ~12/sec
 
 function addThinking() {
   streamLines = [];
   streamTokens = "";
+  streamTokenFlushScheduled = false;
+  streamTokenLastFlush = 0;
   const el = document.createElement("div");
   el.className = "chat-message assistant";
   el.id = "thinking-indicator";
@@ -942,20 +948,43 @@ function appendStreamLine(text) {
     line.textContent = text;
     log.appendChild(line);
   }
-  // Clear token area when a new phase starts
   streamTokens = "";
   const tokenEl = document.getElementById("stream-tokens");
   if (tokenEl) tokenEl.textContent = "";
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+function flushStreamTokens() {
+  streamTokenFlushScheduled = false;
+  streamTokenLastFlush = Date.now();
+  const tokenEl = document.getElementById("stream-tokens");
+  if (!tokenEl) return;
+  let display = streamTokens;
+  let truncated = false;
+  if (display.length > STREAM_MAX_DISPLAY_CHARS) {
+    display = "... " + display.slice(-STREAM_MAX_DISPLAY_CHARS);
+    truncated = true;
+  }
+  tokenEl.textContent = display;
+  if (truncated) tokenEl.dataset.truncated = "1";
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function scheduleStreamTokenFlush() {
+  if (streamTokenFlushScheduled) return;
+  const elapsed = Date.now() - streamTokenLastFlush;
+  const delay = Math.max(0, STREAM_FLUSH_INTERVAL_MS - elapsed);
+  streamTokenFlushScheduled = true;
+  if (delay <= 0) {
+    requestAnimationFrame(flushStreamTokens);
+  } else {
+    setTimeout(flushStreamTokens, delay);
+  }
+}
+
 function appendStreamToken(token) {
   streamTokens += token;
-  const tokenEl = document.getElementById("stream-tokens");
-  if (tokenEl) {
-    tokenEl.textContent = streamTokens;
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-  }
+  scheduleStreamTokenFlush();
 }
 
 function removeThinking() {
