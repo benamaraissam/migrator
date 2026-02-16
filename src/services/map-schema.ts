@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { MappingResult, MappingItem } from "../types.js";
-import { buildUserPrompt, SYSTEM_PROMPT, type RawFile } from "../prompts/schema-mapping.js";
+import { buildUserPrompt, buildChunkPrompt, SYSTEM_PROMPT, type RawFile } from "../prompts/schema-mapping.js";
 
 const HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
@@ -28,6 +28,218 @@ function getClient(): OpenAI {
   return new OpenAI({ apiKey: key });
 }
 
+/* ── Token estimation & limits ── */
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function getMaxTokens(): number {
+  const env = process.env.LLM_MAX_TOKENS;
+  if (env) {
+    const n = parseInt(env, 10);
+    if (!isNaN(n) && n > 0) return n;
+  }
+  return 8192;
+}
+
+const RESPONSE_BUFFER = 2000;
+
+function estimatePromptTokens(
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
+  userInstruction?: string,
+  rules?: string
+): number {
+  let total = estimateTokens(SYSTEM_PROMPT);
+  for (const f of sourceFiles) total += estimateTokens(f.content) + estimateTokens(f.fileName) + 20;
+  for (const f of targetFiles) total += estimateTokens(f.content) + estimateTokens(f.fileName) + 20;
+  if (userInstruction) total += estimateTokens(userInstruction);
+  if (rules) total += estimateTokens(rules);
+  total += 200; // prompt framing overhead
+  total += RESPONSE_BUFFER;
+  return total;
+}
+
+/* ── File compression ── */
+
+function compressFile(file: RawFile): RawFile {
+  const ext = file.fileName.split(".").pop()?.toLowerCase() ?? "";
+  const content = file.content;
+
+  if (ext === "csv" || ext === "tsv" || ext === "txt") {
+    const lines = content.split(/\r?\n/);
+    if (lines.length > 5) {
+      const compressed = lines.slice(0, 4).join("\n");
+      return { fileName: file.fileName, content: compressed + `\n... (${lines.length - 4} more rows)` };
+    }
+    return file;
+  }
+
+  if (ext === "json") {
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed) && parsed.length > 2) {
+        const compressed = JSON.stringify(parsed.slice(0, 2), null, 2);
+        return { fileName: file.fileName, content: compressed + `\n// ... (${parsed.length - 2} more objects)` };
+      }
+    } catch { /* not valid JSON, treat as text */ }
+    const lines = content.split(/\r?\n/);
+    if (lines.length > 200) {
+      return { fileName: file.fileName, content: lines.slice(0, 200).join("\n") + `\n... (truncated)` };
+    }
+    return file;
+  }
+
+  const lines = content.split(/\r?\n/);
+  if (lines.length > 200) {
+    return { fileName: file.fileName, content: lines.slice(0, 200).join("\n") + `\n... (truncated)` };
+  }
+  return file;
+}
+
+function compressFiles(files: RawFile[]): RawFile[] {
+  return files.map(compressFile);
+}
+
+/* ── Chunking: split target files into groups paired with all (compressed) source files ── */
+
+interface FileChunk {
+  sourceFiles: RawFile[];
+  targetFiles: RawFile[];
+}
+
+function chunkFiles(
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
+  maxTokens: number,
+  userInstruction?: string,
+  rules?: string
+): FileChunk[] {
+  const compressed = compressFiles(sourceFiles);
+  const chunks: FileChunk[] = [];
+
+  const baseTokens = estimateTokens(SYSTEM_PROMPT)
+    + compressed.reduce((s, f) => s + estimateTokens(f.content) + estimateTokens(f.fileName) + 20, 0)
+    + (userInstruction ? estimateTokens(userInstruction) : 0)
+    + (rules ? estimateTokens(rules) : 0)
+    + 300
+    + RESPONSE_BUFFER;
+
+  let currentTargets: RawFile[] = [];
+  let currentTokens = baseTokens;
+
+  for (const tf of targetFiles) {
+    const compTf = compressFile(tf);
+    const tfTokens = estimateTokens(compTf.content) + estimateTokens(compTf.fileName) + 20;
+
+    if (currentTargets.length > 0 && currentTokens + tfTokens > maxTokens) {
+      chunks.push({ sourceFiles: compressed, targetFiles: currentTargets });
+      currentTargets = [];
+      currentTokens = baseTokens;
+    }
+
+    currentTargets.push(compTf);
+    currentTokens += tfTokens;
+  }
+
+  if (currentTargets.length > 0) {
+    chunks.push({ sourceFiles: compressed, targetFiles: currentTargets });
+  }
+
+  // If a single target file still exceeds the limit, we still send it as one chunk
+  if (chunks.length === 0) {
+    chunks.push({ sourceFiles: compressed, targetFiles: compressFiles(targetFiles) });
+  }
+
+  return chunks;
+}
+
+/* ── Merge multiple partial MappingResults ── */
+
+function mergeResults(results: MappingResult[]): MappingResult {
+  const byTarget = new Map<string, MappingItem>();
+  const allUnmappedSource = new Set<string>();
+  const allUnmappedTarget = new Set<string>();
+  const summaries: string[] = [];
+
+  for (const r of results) {
+    for (const m of r.mappings) {
+      const existing = byTarget.get(m.target_column);
+      if (existing) {
+        if (m.confidence_score > existing.confidence_score) {
+          byTarget.set(m.target_column, m);
+        }
+      } else {
+        byTarget.set(m.target_column, m);
+      }
+    }
+    for (const c of r.unmapped_source_columns ?? []) allUnmappedSource.add(c);
+    for (const c of r.unmapped_target_columns ?? []) allUnmappedTarget.add(c);
+    if (r.analysis_summary) summaries.push(r.analysis_summary);
+  }
+
+  const mappings = Array.from(byTarget.values());
+
+  // Remove from unmapped lists any columns that ended up mapped
+  const mappedTargets = new Set(mappings.map((m) => m.target_column));
+  const mappedSources = new Set(mappings.flatMap((m) => m.source_columns));
+  for (const t of mappedTargets) allUnmappedTarget.delete(t);
+  for (const s of mappedSources) allUnmappedSource.delete(s);
+
+  const globalConfidence =
+    mappings.length > 0
+      ? mappings.reduce((s, m) => s + m.confidence_score, 0) / mappings.length
+      : 0;
+
+  return {
+    mappings,
+    unmapped_source_columns: [...allUnmappedSource],
+    unmapped_target_columns: [...allUnmappedTarget],
+    global_confidence: globalConfidence,
+    analysis_summary: summaries.join(" "),
+  };
+}
+
+/* ── Single LLM call helper ── */
+
+async function callLLM(
+  client: OpenAI,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.2
+): Promise<MappingResult> {
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    { role: "user" as const, content: userPrompt },
+  ];
+
+  console.log("\n========== LLM REQUEST ==========");
+  console.log("Model:", model);
+  console.log("Prompt tokens (est):", estimateTokens(systemPrompt + userPrompt));
+  console.log("=================================\n");
+
+  const fmt = getResponseFormat();
+  const completion = await client.chat.completions.create({
+    model,
+    messages,
+    temperature,
+    ...(fmt ? { response_format: fmt } : {}),
+  });
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) throw new Error("No response from LLM");
+
+  console.log("========== LLM RESPONSE ==========");
+  console.log(content);
+  console.log("==================================\n");
+
+  return validateResult(extractJSON(content));
+}
+
+/* ── Main entry point: 3-tier strategy ── */
+
 export async function mapSchema(
   sourceFiles: RawFile[],
   targetFiles: RawFile[],
@@ -35,44 +247,97 @@ export async function mapSchema(
   rules?: string
 ): Promise<MappingResult> {
   const client = getClient();
-  const userPrompt = buildUserPrompt(sourceFiles, targetFiles, userInstruction, rules);
-
   const model =
     process.env.LLM_MODEL ||
     process.env.OPENAI_MODEL ||
     "meta-llama/Llama-3.2-3B-Instruct";
+  const maxTokens = getMaxTokens();
 
-  const messages = [
-    { role: "system" as const, content: SYSTEM_PROMPT },
-    { role: "user" as const, content: userPrompt },
-  ];
+  // Tier 1: Try sending everything as-is
+  const fullTokens = estimatePromptTokens(sourceFiles, targetFiles, userInstruction, rules);
+  console.log(`[Token mgmt] Full prompt: ~${fullTokens} tokens, limit: ${maxTokens}`);
 
-  console.log("\n========== LLM REQUEST ==========");
-  console.log("Model:", model);
-  console.log("--- System prompt ---");
-  console.log(SYSTEM_PROMPT);
-  console.log("--- User prompt ---");
-  console.log(userPrompt);
-  console.log("=================================\n");
-
-  const completion = await client.chat.completions.create({
-    model,
-    messages,
-    response_format: { type: "json_object" },
-    temperature: 0.2,
-  });
-
-  const content = completion.choices[0]?.message?.content;
-  if (!content) {
-    throw new Error("No response from LLM");
+  if (fullTokens <= maxTokens) {
+    console.log("[Token mgmt] Tier 1: fits in context, sending as-is");
+    const userPrompt = buildUserPrompt(sourceFiles, targetFiles, userInstruction, rules);
+    return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
 
-  console.log("========== LLM RESPONSE ==========");
-  console.log(content);
-  console.log("==================================\n");
+  // Tier 2: Compress files and try again
+  const compressedSource = compressFiles(sourceFiles);
+  const compressedTarget = compressFiles(targetFiles);
+  const compressedTokens = estimatePromptTokens(compressedSource, compressedTarget, userInstruction, rules);
+  console.log(`[Token mgmt] Compressed prompt: ~${compressedTokens} tokens`);
 
-  const parsed = JSON.parse(content) as MappingResult;
-  return validateResult(parsed);
+  if (compressedTokens <= maxTokens) {
+    console.log("[Token mgmt] Tier 2: compressed files fit, sending compressed");
+    const userPrompt = buildUserPrompt(compressedSource, compressedTarget, userInstruction, rules);
+    return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
+  }
+
+  // Tier 3: Chunk by target tables and run in parallel
+  const chunks = chunkFiles(sourceFiles, targetFiles, maxTokens, userInstruction, rules);
+  console.log(`[Token mgmt] Tier 3: splitting into ${chunks.length} chunks`);
+
+  const chunkResults = await Promise.all(
+    chunks.map((chunk, i) => {
+      console.log(`[Token mgmt] Sending chunk ${i + 1}/${chunks.length} (${chunk.targetFiles.map((f) => f.fileName).join(", ")})`);
+      const userPrompt = buildChunkPrompt(
+        chunk.sourceFiles,
+        chunk.targetFiles,
+        i + 1,
+        chunks.length,
+        userInstruction,
+        rules
+      );
+      return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
+    })
+  );
+
+  const merged = mergeResults(chunkResults);
+  console.log(`[Token mgmt] Merged ${chunkResults.length} chunk results: ${merged.mappings.length} total mappings`);
+  return merged;
+}
+
+/**
+ * Extract valid JSON from an LLM response that may contain extra text,
+ * markdown fences, or other garbage around the actual JSON object.
+ */
+function extractJSON(raw: string): unknown {
+  // 1. Try direct parse first
+  try { return JSON.parse(raw); } catch { /* continue */ }
+
+  // 2. Strip markdown code fences
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) {
+    try { return JSON.parse(fenced[1].trim()); } catch { /* continue */ }
+  }
+
+  // 3. Find the first { and last } to extract the outermost JSON object
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    const candidate = raw.substring(start, end + 1);
+    try { return JSON.parse(candidate); } catch { /* continue */ }
+
+    // 4. Try fixing common issues: trailing commas before }
+    const cleaned = candidate
+      .replace(/,\s*}/g, "}")
+      .replace(/,\s*]/g, "]");
+    try { return JSON.parse(cleaned); } catch { /* continue */ }
+  }
+
+  throw new Error(
+    `Failed to extract valid JSON from LLM response. Raw response starts with: "${raw.substring(0, 200)}..."`
+  );
+}
+
+function getResponseFormat(): { type: "json_object" } | undefined {
+  // Some LLMs don't support response_format; set LLM_NO_JSON_MODE=1 to disable
+  if (process.env.LLM_NO_JSON_MODE === "1" || process.env.LLM_NO_JSON_MODE === "true") {
+    return undefined;
+  }
+  return { type: "json_object" };
 }
 
 const MATCH_TYPES = ["exact", "semantic", "transformed", "derived", "incompatible"] as const;
@@ -278,12 +543,28 @@ export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
     process.env.OPENAI_MODEL ||
     "meta-llama/Llama-3.2-3B-Instruct";
 
+  // Use compressed files for refine context to stay within token limits
+  const maxTokens = getMaxTokens();
+  let srcFiles = sourceFiles;
+  let tgtFiles = targetFiles;
+  const rawEstimate = estimateTokens(
+    JSON.stringify(currentMapping) +
+    sourceFiles.map((f) => f.content).join("") +
+    targetFiles.map((f) => f.content).join("") +
+    messages.map((m) => m.content).join("")
+  );
+  if (rawEstimate + RESPONSE_BUFFER > maxTokens) {
+    console.log(`[Token mgmt] Refine: compressing files (raw ~${rawEstimate} tokens, limit ${maxTokens})`);
+    srcFiles = compressFiles(sourceFiles);
+    tgtFiles = compressFiles(targetFiles);
+  }
+
   let contextBlock = `\n=== SOURCE FILES ===\n`;
-  for (const f of sourceFiles) {
+  for (const f of srcFiles) {
     contextBlock += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
   }
   contextBlock += `\n=== TARGET FILES ===\n`;
-  for (const f of targetFiles) {
+  for (const f of tgtFiles) {
     contextBlock += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
   }
   contextBlock += `\nCURRENT_MAPPING:\n${JSON.stringify(currentMapping, null, 2)}\n`;
@@ -311,11 +592,12 @@ export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
   console.log("History length:", messages.length);
   console.log("========================================\n");
 
+  const fmt = getResponseFormat();
   const completion = await client.chat.completions.create({
     model,
     messages: fullMessages,
-    response_format: { type: "json_object" },
     temperature: 0.3,
+    ...(fmt ? { response_format: fmt } : {}),
   });
 
   const content = completion.choices[0]?.message?.content;
@@ -325,7 +607,7 @@ export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
   console.log(content);
   console.log("=========================================\n");
 
-  const parsed = JSON.parse(content) as { mapping?: unknown; message?: string };
+  const parsed = extractJSON(content) as { mapping?: unknown; message?: string };
   const mapping = validateResult(parsed.mapping ?? parsed);
   const message = typeof parsed.message === "string" ? parsed.message : "Mapping updated.";
 

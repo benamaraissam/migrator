@@ -44,6 +44,11 @@ Expected JSON output format:
   "analysis_summary": "Brief overview of the mapping"
 }
 
+NOTE: Files may be compressed (headers + a few sample rows only) to fit within context limits.
+This is intentional — map based on column names, data types, and sample values, not full data.
+You may also receive only a SUBSET of the target tables if the request was split into chunks.
+Map only what you see in this request.
+
 Rules:
 - Confidence score must be realistic (0 to 1).
 - If transformation is needed, provide SQL-like syntax.
@@ -78,6 +83,35 @@ export function buildUserPrompt(
   }
 
   prompt += `\n=== TARGET FILES ===\n`;
+  for (const f of targetFiles) {
+    prompt += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
+  }
+
+  return prompt;
+}
+
+export function buildChunkPrompt(
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
+  chunkIndex: number,
+  totalChunks: number,
+  userInstruction?: string,
+  rules?: string
+): string {
+  let prompt = `This is chunk ${chunkIndex} of ${totalChunks}. Map ONLY the target tables/columns included in this chunk. The source files contain ALL source tables for reference.\n\nReturn ONLY valid JSON matching the expected output format.`;
+  if (userInstruction?.trim()) {
+    prompt += `\n\nUser's instruction: ${userInstruction.trim()}`;
+  }
+  if (rules?.trim()) {
+    prompt += `\n\nADDITIONAL RULES (you MUST follow these):\n${rules.trim()}`;
+  }
+
+  prompt += `\n\n=== SOURCE FILES (all) ===\n`;
+  for (const f of sourceFiles) {
+    prompt += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
+  }
+
+  prompt += `\n=== TARGET FILES (chunk ${chunkIndex}/${totalChunks}) ===\n`;
   for (const f of targetFiles) {
     prompt += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
   }
