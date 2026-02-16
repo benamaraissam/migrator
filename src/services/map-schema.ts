@@ -40,10 +40,10 @@ function getMaxTokens(): number {
     const n = parseInt(env, 10);
     if (!isNaN(n) && n > 0) return n;
   }
-  return 8192;
+  return 128000;
 }
 
-const RESPONSE_BUFFER = 2000;
+const RESPONSE_BUFFER = 4000;
 
 function estimatePromptTokens(
   sourceFiles: RawFile[],
@@ -63,37 +63,68 @@ function estimatePromptTokens(
 
 /* ── File compression ── */
 
+/**
+ * Detect if a CSV/text file looks like a schema definition / data dictionary
+ * (each row describes a column, not actual data records).
+ * Heuristic: header contains words like "table", "column", "field", "type", "schema".
+ */
+function looksLikeSchemaFile(firstLine: string): boolean {
+  const lower = firstLine.toLowerCase();
+  const schemaKeywords = ["table", "column", "field", "type", "schema", "description", "comment", "nullable"];
+  const matches = schemaKeywords.filter((kw) => lower.includes(kw));
+  return matches.length >= 2;
+}
+
+/**
+ * Compress a file to reduce token usage. Strategy depends on file type:
+ * - Schema/dictionary files: keep ALL rows (each row is a column definition, losing rows = losing columns)
+ * - Data CSV/TSV: keep header + first 20 data rows
+ * - JSON arrays: keep first 5 objects
+ * - Text: keep first 500 lines
+ */
 function compressFile(file: RawFile): RawFile {
   const ext = file.fileName.split(".").pop()?.toLowerCase() ?? "";
   const content = file.content;
 
   if (ext === "csv" || ext === "tsv" || ext === "txt") {
-    const lines = content.split(/\r?\n/);
-    if (lines.length > 5) {
-      const compressed = lines.slice(0, 4).join("\n");
-      return { fileName: file.fileName, content: compressed + `\n... (${lines.length - 4} more rows)` };
+    const lines = content.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length <= 25) return file;
+
+    // If it looks like a schema/dictionary file, keep ALL rows
+    if (looksLikeSchemaFile(lines[0])) {
+      return file;
     }
-    return file;
+
+    // Data file: keep header + 20 sample rows
+    const kept = lines.slice(0, 21).join("\n");
+    return {
+      fileName: file.fileName,
+      content: kept + `\n... (${lines.length - 21} more data rows, ${lines.length} total)`,
+    };
   }
 
   if (ext === "json") {
     try {
       const parsed = JSON.parse(content);
-      if (Array.isArray(parsed) && parsed.length > 2) {
-        const compressed = JSON.stringify(parsed.slice(0, 2), null, 2);
-        return { fileName: file.fileName, content: compressed + `\n// ... (${parsed.length - 2} more objects)` };
+      if (Array.isArray(parsed) && parsed.length > 5) {
+        const compressed = JSON.stringify(parsed.slice(0, 5), null, 2);
+        return {
+          fileName: file.fileName,
+          content: compressed + `\n// ... (${parsed.length - 5} more objects, ${parsed.length} total)`,
+        };
       }
     } catch { /* not valid JSON, treat as text */ }
     const lines = content.split(/\r?\n/);
-    if (lines.length > 200) {
-      return { fileName: file.fileName, content: lines.slice(0, 200).join("\n") + `\n... (truncated)` };
+    if (lines.length > 500) {
+      return { fileName: file.fileName, content: lines.slice(0, 500).join("\n") + `\n... (truncated from ${lines.length} lines)` };
     }
     return file;
   }
 
+  // Generic text
   const lines = content.split(/\r?\n/);
-  if (lines.length > 200) {
-    return { fileName: file.fileName, content: lines.slice(0, 200).join("\n") + `\n... (truncated)` };
+  if (lines.length > 500) {
+    return { fileName: file.fileName, content: lines.slice(0, 500).join("\n") + `\n... (truncated from ${lines.length} lines)` };
   }
   return file;
 }
