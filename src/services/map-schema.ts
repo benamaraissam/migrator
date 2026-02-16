@@ -76,61 +76,92 @@ function looksLikeSchemaFile(firstLine: string): boolean {
 }
 
 /**
- * Compress a file to reduce token usage. Strategy depends on file type:
- * - Schema/dictionary files: keep ALL rows (each row is a column definition, losing rows = losing columns)
- * - Data CSV/TSV: keep header + first 20 data rows
- * - JSON arrays: keep first 5 objects
- * - Text: keep first 500 lines
+ * Compression levels:
+ * - "light": keep schema files intact, data CSV header+20 rows, JSON 5 objects, text 500 lines
+ * - "medium": schema files keep all rows but strip to first 3 CSV columns per row, data CSV header+5, JSON 2 objects, text 100 lines
+ * - "heavy": schema files keep all rows stripped, data CSV header+2, JSON 1 object, text 50 lines
  */
-function compressFile(file: RawFile): RawFile {
+type CompressionLevel = "light" | "medium" | "heavy";
+
+function compressFile(file: RawFile, level: CompressionLevel = "light"): RawFile {
   const ext = file.fileName.split(".").pop()?.toLowerCase() ?? "";
   const content = file.content;
+  const dataRows = level === "heavy" ? 3 : level === "medium" ? 6 : 21;
+  const jsonObjects = level === "heavy" ? 1 : level === "medium" ? 2 : 5;
+  const textLines = level === "heavy" ? 50 : level === "medium" ? 100 : 500;
 
   if (ext === "csv" || ext === "tsv" || ext === "txt") {
     const lines = content.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length <= 25) return file;
+    if (lines.length <= dataRows) return file;
 
-    // If it looks like a schema/dictionary file, keep ALL rows
     if (looksLikeSchemaFile(lines[0])) {
-      return file;
+      if (level === "light") return file;
+
+      const delimiter = lines[0].includes("\t") ? "\t" : lines[0].includes(";") ? ";" : ",";
+      const headerCells = lines[0].split(delimiter).map((h) => h.trim().toLowerCase());
+
+      if (level === "heavy") {
+        // Keep only essential columns: table, column/field name, type
+        const essentialKeywords = ["table", "column", "field", "name", "type", "data_type", "datatype"];
+        const essentialIndices = headerCells
+          .map((h, i) => essentialKeywords.some((kw) => h.includes(kw)) ? i : -1)
+          .filter((i) => i !== -1);
+        // If we found essential columns, keep only those; otherwise fall back to trimming cells
+        if (essentialIndices.length >= 2) {
+          const stripped = lines.map((line) => {
+            const cells = line.split(delimiter);
+            return essentialIndices.map((i) => (cells[i] || "").trim()).join(delimiter);
+          });
+          return { fileName: file.fileName, content: stripped.join("\n") + `\n(compressed: kept ${essentialIndices.length} of ${headerCells.length} columns)` };
+        }
+      }
+
+      // Medium: keep all columns but trim long cell values to 50 chars
+      const stripped = lines.map((line) => {
+        const cells = line.split(delimiter);
+        return cells.map((c) => c.length > 50 ? c.substring(0, 50) + "..." : c).join(delimiter);
+      });
+      return { fileName: file.fileName, content: stripped.join("\n") };
     }
 
-    // Data file: keep header + 20 sample rows
-    const kept = lines.slice(0, 21).join("\n");
+    const kept = lines.slice(0, dataRows).join("\n");
     return {
       fileName: file.fileName,
-      content: kept + `\n... (${lines.length - 21} more data rows, ${lines.length} total)`,
+      content: kept + `\n... (${lines.length - dataRows} more data rows, ${lines.length} total)`,
     };
   }
 
   if (ext === "json") {
     try {
       const parsed = JSON.parse(content);
-      if (Array.isArray(parsed) && parsed.length > 5) {
-        const compressed = JSON.stringify(parsed.slice(0, 5), null, 2);
+      if (Array.isArray(parsed) && parsed.length > jsonObjects) {
+        const compressed = JSON.stringify(parsed.slice(0, jsonObjects), null, level === "heavy" ? 0 : 2);
         return {
           fileName: file.fileName,
-          content: compressed + `\n// ... (${parsed.length - 5} more objects, ${parsed.length} total)`,
+          content: compressed + `\n// ... (${parsed.length - jsonObjects} more objects, ${parsed.length} total)`,
         };
+      }
+      if (level !== "light" && !Array.isArray(parsed) && typeof parsed === "object") {
+        const compressed = JSON.stringify(parsed, null, level === "heavy" ? 0 : 2);
+        return { fileName: file.fileName, content: compressed };
       }
     } catch { /* not valid JSON, treat as text */ }
     const lines = content.split(/\r?\n/);
-    if (lines.length > 500) {
-      return { fileName: file.fileName, content: lines.slice(0, 500).join("\n") + `\n... (truncated from ${lines.length} lines)` };
+    if (lines.length > textLines) {
+      return { fileName: file.fileName, content: lines.slice(0, textLines).join("\n") + `\n... (truncated from ${lines.length} lines)` };
     }
     return file;
   }
 
-  // Generic text
   const lines = content.split(/\r?\n/);
-  if (lines.length > 500) {
-    return { fileName: file.fileName, content: lines.slice(0, 500).join("\n") + `\n... (truncated from ${lines.length} lines)` };
+  if (lines.length > textLines) {
+    return { fileName: file.fileName, content: lines.slice(0, textLines).join("\n") + `\n... (truncated from ${lines.length} lines)` };
   }
   return file;
 }
 
-function compressFiles(files: RawFile[]): RawFile[] {
-  return files.map(compressFile);
+function compressFiles(files: RawFile[], level: CompressionLevel = "light"): RawFile[] {
+  return files.map((f) => compressFile(f, level));
 }
 
 /* ── Chunking: split target files into groups paired with all (compressed) source files ── */
@@ -147,7 +178,8 @@ function chunkFiles(
   userInstruction?: string,
   rules?: string
 ): FileChunk[] {
-  const compressed = compressFiles(sourceFiles);
+  // Use heavy compression for source files when chunking (Tier 3 = last resort)
+  const compressed = compressFiles(sourceFiles, "heavy");
   const chunks: FileChunk[] = [];
 
   const baseTokens = estimateTokens(SYSTEM_PROMPT)
@@ -161,7 +193,7 @@ function chunkFiles(
   let currentTokens = baseTokens;
 
   for (const tf of targetFiles) {
-    const compTf = compressFile(tf);
+    const compTf = compressFile(tf, "medium");
     const tfTokens = estimateTokens(compTf.content) + estimateTokens(compTf.fileName) + 20;
 
     if (currentTargets.length > 0 && currentTokens + tfTokens > maxTokens) {
@@ -269,7 +301,7 @@ async function callLLM(
   return validateResult(extractJSON(content));
 }
 
-/* ── Main entry point: 3-tier strategy ── */
+/* ── Main entry point: 5-tier progressive strategy ── */
 
 export async function mapSchema(
   sourceFiles: RawFile[],
@@ -294,21 +326,45 @@ export async function mapSchema(
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
 
-  // Tier 2: Compress files and try again
-  const compressedSource = compressFiles(sourceFiles);
-  const compressedTarget = compressFiles(targetFiles);
-  const compressedTokens = estimatePromptTokens(compressedSource, compressedTarget, userInstruction, rules);
-  console.log(`[Token mgmt] Compressed prompt: ~${compressedTokens} tokens`);
+  // Tier 2: Light compression
+  const lightSource = compressFiles(sourceFiles, "light");
+  const lightTarget = compressFiles(targetFiles, "light");
+  const lightTokens = estimatePromptTokens(lightSource, lightTarget, userInstruction, rules);
+  console.log(`[Token mgmt] Light compressed: ~${lightTokens} tokens`);
 
-  if (compressedTokens <= maxTokens) {
-    console.log("[Token mgmt] Tier 2: compressed files fit, sending compressed");
-    const userPrompt = buildUserPrompt(compressedSource, compressedTarget, userInstruction, rules);
+  if (lightTokens <= maxTokens) {
+    console.log("[Token mgmt] Tier 2 (light): fits after light compression");
+    const userPrompt = buildUserPrompt(lightSource, lightTarget, userInstruction, rules);
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
 
-  // Tier 3: Chunk by target tables and run in parallel
+  // Tier 3: Medium compression
+  const medSource = compressFiles(sourceFiles, "medium");
+  const medTarget = compressFiles(targetFiles, "medium");
+  const medTokens = estimatePromptTokens(medSource, medTarget, userInstruction, rules);
+  console.log(`[Token mgmt] Medium compressed: ~${medTokens} tokens`);
+
+  if (medTokens <= maxTokens) {
+    console.log("[Token mgmt] Tier 3 (medium): fits after medium compression");
+    const userPrompt = buildUserPrompt(medSource, medTarget, userInstruction, rules);
+    return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
+  }
+
+  // Tier 4: Heavy compression
+  const heavySource = compressFiles(sourceFiles, "heavy");
+  const heavyTarget = compressFiles(targetFiles, "heavy");
+  const heavyTokens = estimatePromptTokens(heavySource, heavyTarget, userInstruction, rules);
+  console.log(`[Token mgmt] Heavy compressed: ~${heavyTokens} tokens`);
+
+  if (heavyTokens <= maxTokens) {
+    console.log("[Token mgmt] Tier 4 (heavy): fits after heavy compression");
+    const userPrompt = buildUserPrompt(heavySource, heavyTarget, userInstruction, rules);
+    return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
+  }
+
+  // Tier 5: Chunk by target tables and run in parallel (uses heavy compression internally)
   const chunks = chunkFiles(sourceFiles, targetFiles, maxTokens, userInstruction, rules);
-  console.log(`[Token mgmt] Tier 3: splitting into ${chunks.length} chunks`);
+  console.log(`[Token mgmt] Tier 5 (chunking): splitting into ${chunks.length} chunks`);
 
   const chunkResults = await Promise.all(
     chunks.map((chunk, i) => {
@@ -574,7 +630,7 @@ export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
     process.env.OPENAI_MODEL ||
     "meta-llama/Llama-3.2-3B-Instruct";
 
-  // Use compressed files for refine context to stay within token limits
+  // Use progressive compression for refine context to stay within token limits
   const maxTokens = getMaxTokens();
   let srcFiles = sourceFiles;
   let tgtFiles = targetFiles;
@@ -585,9 +641,18 @@ export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
     messages.map((m) => m.content).join("")
   );
   if (rawEstimate + RESPONSE_BUFFER > maxTokens) {
-    console.log(`[Token mgmt] Refine: compressing files (raw ~${rawEstimate} tokens, limit ${maxTokens})`);
-    srcFiles = compressFiles(sourceFiles);
-    tgtFiles = compressFiles(targetFiles);
+    for (const level of ["light", "medium", "heavy"] as CompressionLevel[]) {
+      srcFiles = compressFiles(sourceFiles, level);
+      tgtFiles = compressFiles(targetFiles, level);
+      const est = estimateTokens(
+        JSON.stringify(currentMapping) +
+        srcFiles.map((f) => f.content).join("") +
+        tgtFiles.map((f) => f.content).join("") +
+        messages.map((m) => m.content).join("")
+      );
+      console.log(`[Token mgmt] Refine ${level} compressed: ~${est} tokens (limit ${maxTokens})`);
+      if (est + RESPONSE_BUFFER <= maxTokens) break;
+    }
   }
 
   let contextBlock = `\n=== SOURCE FILES ===\n`;
