@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { readFileSync } from "fs";
+import { basename } from "path";
 import { mapSchema } from "../services/map-schema.js";
-import type { Schema } from "../types.js";
+import type { RawFile } from "../prompts/schema-mapping.js";
 
 const args = process.argv.slice(2);
 if (args.length < 2) {
-  console.error("Usage: npm run map -- <source-schema.json> <target-schema.json>");
+  console.error("Usage: npm run map -- <source-file> <target-file> [more files...]");
+  console.error("  First half of files = source, second half = target");
   process.exit(1);
 }
 
@@ -20,10 +22,19 @@ if (
   process.exit(1);
 }
 
-const [sourcePath, targetPath] = args;
-const sourceSchema = JSON.parse(readFileSync(sourcePath, "utf-8")) as Schema;
-const targetSchema = JSON.parse(readFileSync(targetPath, "utf-8")) as Schema;
+const mid = Math.ceil(args.length / 2);
+const sourcePaths = args.slice(0, mid);
+const targetPaths = args.slice(mid);
 
-console.log("Mapping schemas...");
-const result = await mapSchema(sourceSchema, targetSchema);
+const toRawFiles = (paths: string[]): RawFile[] =>
+  paths.map((p) => ({
+    fileName: basename(p),
+    content: readFileSync(p, "utf-8"),
+  }));
+
+const sourceFiles = toRawFiles(sourcePaths);
+const targetFiles = toRawFiles(targetPaths);
+
+console.log(`Mapping ${sourceFiles.length} source file(s) → ${targetFiles.length} target file(s)...`);
+const result = await mapSchema(sourceFiles, targetFiles);
 console.log(JSON.stringify(result, null, 2));

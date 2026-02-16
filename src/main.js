@@ -782,6 +782,69 @@ chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
 });
 
+async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstruction, rules) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      source_files: sourceFiles,
+      target_files: targetFiles,
+      user_instruction: userInstruction,
+      rules: rules,
+    });
+
+    fetch("/api/map-schema-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    }).then((res) => {
+      if (!res.ok) {
+        return res.json().then((d) => resolve({ error: d.error || "Request failed" }));
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      function processChunk() {
+        reader.read().then(({ done, value }) => {
+          if (done) {
+            reject(new Error("Stream ended without result"));
+            return;
+          }
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          let eventType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.substring(7).trim();
+            } else if (line.startsWith("data: ")) {
+              const data = line.substring(6);
+              try {
+                const parsed = JSON.parse(data);
+                if (eventType === "progress") {
+                  const phaseIcons = { extracting: "\u{1F50D}", matching: "\u{1F517}", mapping: "\u{1F4CB}", done: "\u2705" };
+                  const icon = phaseIcons[parsed.phase] || "";
+                  updateThinkingStatus(`${icon} ${parsed.detail}`);
+                } else if (eventType === "result") {
+                  resolve(parsed);
+                  return;
+                } else if (eventType === "error") {
+                  resolve({ error: parsed.error });
+                  return;
+                }
+              } catch { /* ignore parse errors in SSE */ }
+            }
+          }
+          processChunk();
+        }).catch(reject);
+      }
+      processChunk();
+    }).catch(reject);
+  });
+}
+
 async function sendChatMessage() {
   const text = (chatInput.value || "").trim();
   if (!text) return;
@@ -805,19 +868,9 @@ async function sendChatMessage() {
 
     try {
       addThinking();
-      const res = await fetch("/api/map-schema", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          source_files: rawSourceFiles,
-          target_files: rawTargetFiles,
-          user_instruction: text,
-          rules: getRulesText(),
-        }),
-      });
-      const data = await res.json();
+      const data = await fetchMappingWithProgress(rawSourceFiles, rawTargetFiles, text, getRulesText());
       removeThinking();
-      if (!res.ok) { showError(data.error || "Request failed"); chatHistory.pop(); renderChat(); return; }
+      if (data.error) { showError(data.error); chatHistory.pop(); renderChat(); return; }
       currentMapping = data;
       chatHistory.push({ role: "assistant", content: data.analysis_summary || "Mapping generated. See results below." });
       renderResult(data);
@@ -861,9 +914,17 @@ function addThinking() {
   const el = document.createElement("div");
   el.className = "chat-message assistant thinking";
   el.id = "thinking-indicator";
-  el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div>';
+  el.innerHTML = '<div class="thinking-content"><div class="dots"><span></span><span></span><span></span></div><div class="thinking-status" id="thinking-status"></div></div>';
   chatMessages.appendChild(el);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function updateThinkingStatus(text) {
+  const el = document.getElementById("thinking-status");
+  if (el) {
+    el.textContent = text;
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
 }
 
 function removeThinking() {

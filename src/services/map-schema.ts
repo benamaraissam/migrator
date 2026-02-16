@@ -1,6 +1,18 @@
 import OpenAI from "openai";
 import type { MappingResult, MappingItem } from "../types.js";
-import { buildUserPrompt, buildChunkPrompt, SYSTEM_PROMPT, type RawFile } from "../prompts/schema-mapping.js";
+import {
+  buildUserPrompt,
+  buildChunkPrompt,
+  SYSTEM_PROMPT,
+  EXTRACT_SCHEMA_SYSTEM_PROMPT,
+  buildExtractSchemaPrompt,
+  MATCH_TABLES_SYSTEM_PROMPT,
+  buildMatchTablesPrompt,
+  MAP_COLUMNS_SYSTEM_PROMPT,
+  buildMapColumnsPrompt,
+  type RawFile,
+  type CompactTable,
+} from "../prompts/schema-mapping.js";
 
 const HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
@@ -301,13 +313,344 @@ async function callLLM(
   return validateResult(extractJSON(content));
 }
 
+/* ── Generic LLM call that returns raw parsed JSON ── */
+
+async function callLLMRaw(
+  client: OpenAI,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  temperature = 0.2
+): Promise<unknown> {
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    { role: "user" as const, content: userPrompt },
+  ];
+
+  console.log("\n========== LLM REQUEST (raw) ==========");
+  console.log("Model:", model);
+  console.log("Prompt tokens (est):", estimateTokens(systemPrompt + userPrompt));
+  console.log("========================================\n");
+
+  const fmt = getResponseFormat();
+  const completion = await client.chat.completions.create({
+    model,
+    messages,
+    temperature,
+    ...(fmt ? { response_format: fmt } : {}),
+  });
+
+  const content = completion.choices[0]?.message?.content;
+  if (!content) throw new Error("No response from LLM");
+
+  console.log("========== LLM RESPONSE (raw) ==========");
+  console.log(content.substring(0, 500) + (content.length > 500 ? "..." : ""));
+  console.log("=========================================\n");
+
+  return extractJSON(content);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   3-Phase Agentic Pipeline (for prompts that exceed context window)
+   Phase 1: Extract compact schemas from each file (parallel per-file calls)
+   Phase 2: Match source tables → target tables (single call with compact schemas)
+   Phase 3: Detailed column mapping per table pair (parallel per-pair calls)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+type ProgressCallback = (phase: string, detail: string) => void;
+
+/* ── Phase 1: Extract schemas ── */
+
+async function extractSchemaFromFile(
+  client: OpenAI,
+  model: string,
+  file: RawFile,
+  maxTokens: number
+): Promise<CompactTable[]> {
+  // Compress file if needed to fit in a single call
+  let content = file.content;
+  const promptBase = estimateTokens(EXTRACT_SCHEMA_SYSTEM_PROMPT) + estimateTokens(file.fileName) + 200 + RESPONSE_BUFFER;
+  const contentTokens = estimateTokens(content);
+
+  if (promptBase + contentTokens > maxTokens) {
+    // Try progressive compression on this single file
+    for (const level of ["light", "medium", "heavy"] as CompressionLevel[]) {
+      const compressed = compressFile(file, level);
+      if (promptBase + estimateTokens(compressed.content) <= maxTokens) {
+        content = compressed.content;
+        break;
+      }
+    }
+    // If still too big, take what we can
+    const available = maxTokens - promptBase;
+    if (estimateTokens(content) > available) {
+      const chars = available * 4;
+      content = content.substring(0, chars) + "\n... (truncated to fit context)";
+    }
+  }
+
+  const prompt = buildExtractSchemaPrompt({ fileName: file.fileName, content });
+  const result = await callLLMRaw(client, model, EXTRACT_SCHEMA_SYSTEM_PROMPT, prompt);
+
+  const obj = result as Record<string, unknown>;
+  const tables = Array.isArray(obj.tables) ? obj.tables : [];
+
+  return tables.map((t: Record<string, unknown>) => ({
+    table_name: typeof t.table_name === "string" ? t.table_name
+      : typeof t.name === "string" ? t.name
+      : file.fileName.replace(/\.[^.]+$/, ""),
+    columns: Array.isArray(t.columns)
+      ? t.columns.map((c: Record<string, unknown>) => ({
+          name: String(c.name ?? c.column_name ?? c.column ?? ""),
+          type: String(c.type ?? c.data_type ?? c.datatype ?? "UNKNOWN"),
+        })).filter((c: { name: string }) => c.name)
+      : [],
+  }));
+}
+
+async function extractAllSchemas(
+  client: OpenAI,
+  model: string,
+  files: RawFile[],
+  maxTokens: number,
+  onProgress?: ProgressCallback
+): Promise<CompactTable[]> {
+  const allTables: CompactTable[] = [];
+
+  // Process files in parallel batches of 3 to avoid rate limits
+  const batchSize = 3;
+  for (let i = 0; i < files.length; i += batchSize) {
+    const batch = files.slice(i, i + batchSize);
+    const batchNames = batch.map((f) => f.fileName).join(", ");
+    onProgress?.("extracting", `Extracting schemas from: ${batchNames} (${i + 1}-${Math.min(i + batchSize, files.length)}/${files.length})`);
+
+    const results = await Promise.all(
+      batch.map((file) => extractSchemaFromFile(client, model, file, maxTokens))
+    );
+
+    for (const tables of results) {
+      allTables.push(...tables);
+    }
+  }
+
+  console.log(`[Phase 1] Extracted ${allTables.length} tables from ${files.length} files`);
+  for (const t of allTables) {
+    console.log(`  - ${t.table_name}: ${t.columns.length} columns`);
+  }
+
+  return allTables;
+}
+
+/* ── Phase 2: Match table pairs ── */
+
+interface TablePair {
+  target_table: string;
+  source_tables: string[];
+  confidence: number;
+}
+
+async function matchTablePairs(
+  client: OpenAI,
+  model: string,
+  sourceTables: CompactTable[],
+  targetTables: CompactTable[],
+  maxTokens: number,
+  rules?: string,
+  onProgress?: ProgressCallback
+): Promise<TablePair[]> {
+  onProgress?.("matching", `Matching ${sourceTables.length} source tables → ${targetTables.length} target tables`);
+
+  const prompt = buildMatchTablesPrompt(sourceTables, targetTables, rules);
+  const promptTokens = estimateTokens(MATCH_TABLES_SYSTEM_PROMPT) + estimateTokens(prompt) + RESPONSE_BUFFER;
+
+  // If the compact schemas still exceed context, chunk target tables
+  if (promptTokens > maxTokens) {
+    console.log(`[Phase 2] Compact schemas still large (~${promptTokens} tokens), chunking target tables`);
+    const allPairs: TablePair[] = [];
+    const chunkSize = Math.max(1, Math.floor(targetTables.length * (maxTokens / promptTokens)));
+
+    for (let i = 0; i < targetTables.length; i += chunkSize) {
+      const chunk = targetTables.slice(i, i + chunkSize);
+      onProgress?.("matching", `Matching tables chunk ${Math.floor(i / chunkSize) + 1} (${chunk.map((t) => t.table_name).join(", ")})`);
+      const chunkPrompt = buildMatchTablesPrompt(sourceTables, chunk, rules);
+      const result = await callLLMRaw(client, model, MATCH_TABLES_SYSTEM_PROMPT, chunkPrompt);
+      const obj = result as Record<string, unknown>;
+      const pairs = Array.isArray(obj.table_pairs) ? obj.table_pairs : [];
+      allPairs.push(...pairs.map(normalizePair));
+    }
+    return allPairs;
+  }
+
+  const result = await callLLMRaw(client, model, MATCH_TABLES_SYSTEM_PROMPT, prompt);
+  const obj = result as Record<string, unknown>;
+  const pairs = Array.isArray(obj.table_pairs) ? obj.table_pairs : [];
+
+  const normalized = pairs.map(normalizePair);
+  console.log(`[Phase 2] Found ${normalized.length} table pairs`);
+  for (const p of normalized) {
+    console.log(`  - ${p.source_tables.join(" + ")} → ${p.target_table} (${(p.confidence * 100).toFixed(0)}%)`);
+  }
+
+  return normalized;
+}
+
+function normalizePair(p: unknown): TablePair {
+  const obj = p as Record<string, unknown>;
+  return {
+    target_table: String(obj.target_table ?? obj.target ?? ""),
+    source_tables: Array.isArray(obj.source_tables)
+      ? obj.source_tables.map(String)
+      : typeof obj.source_table === "string"
+        ? [obj.source_table]
+        : [],
+    confidence: typeof obj.confidence === "number" ? obj.confidence : 0.5,
+  };
+}
+
+/* ── Phase 3: Map columns per table pair ── */
+
+function extractTableContent(
+  files: RawFile[],
+  tableName: string,
+  allTables: CompactTable[]
+): string {
+  // Find which file this table came from
+  // Strategy: look for a file whose name matches, or search file content for the table name
+  const lower = tableName.toLowerCase();
+
+  // 1. Check if a file name matches the table name
+  const byName = files.find((f) => {
+    const base = f.fileName.replace(/\.[^.]+$/, "").toLowerCase();
+    return base === lower || base.includes(lower) || lower.includes(base);
+  });
+  if (byName) return byName.content;
+
+  // 2. Check file contents for mentions of the table name
+  for (const f of files) {
+    if (f.content.toLowerCase().includes(lower)) {
+      return f.content;
+    }
+  }
+
+  // 3. Fallback: build a compact representation from the extracted schema
+  const table = allTables.find((t) => t.table_name.toLowerCase() === lower);
+  if (table) {
+    return `Table: ${table.table_name}\nColumns:\n${table.columns.map((c) => `  ${c.name} (${c.type})`).join("\n")}`;
+  }
+
+  // 4. Last resort: return all file contents concatenated (shouldn't happen)
+  return files.map((f) => f.content).join("\n---\n");
+}
+
+async function mapTablePair(
+  client: OpenAI,
+  model: string,
+  pair: TablePair,
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
+  sourceTables: CompactTable[],
+  targetTables: CompactTable[],
+  maxTokens: number,
+  userInstruction?: string,
+  rules?: string
+): Promise<MappingResult> {
+  // Get raw content for only the relevant tables
+  const sourceContent = pair.source_tables.map((name) => ({
+    tableName: name,
+    rawContent: extractTableContent(sourceFiles, name, sourceTables),
+  }));
+
+  const targetContent = [{
+    tableName: pair.target_table,
+    rawContent: extractTableContent(targetFiles, pair.target_table, targetTables),
+  }];
+
+  const prompt = buildMapColumnsPrompt(sourceContent, targetContent, userInstruction, rules);
+  const promptTokens = estimateTokens(MAP_COLUMNS_SYSTEM_PROMPT) + estimateTokens(prompt) + RESPONSE_BUFFER;
+
+  // If the pair-level prompt is still too large, compress the raw content
+  if (promptTokens > maxTokens) {
+    console.log(`[Phase 3] Pair ${pair.source_tables.join("+")} → ${pair.target_table} too large (~${promptTokens}), compressing`);
+    const compSourceContent = sourceContent.map((s) => ({
+      tableName: s.tableName,
+      rawContent: compressFile({ fileName: s.tableName, content: s.rawContent }, "heavy").content,
+    }));
+    const compTargetContent = targetContent.map((t) => ({
+      tableName: t.tableName,
+      rawContent: compressFile({ fileName: t.tableName, content: t.rawContent }, "medium").content,
+    }));
+    const compPrompt = buildMapColumnsPrompt(compSourceContent, compTargetContent, userInstruction, rules);
+    return callLLM(client, model, MAP_COLUMNS_SYSTEM_PROMPT, compPrompt);
+  }
+
+  return callLLM(client, model, MAP_COLUMNS_SYSTEM_PROMPT, prompt);
+}
+
+/* ── Full 3-phase agentic pipeline ── */
+
+async function agenticMapSchema(
+  client: OpenAI,
+  model: string,
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
+  maxTokens: number,
+  userInstruction?: string,
+  rules?: string,
+  onProgress?: ProgressCallback
+): Promise<MappingResult> {
+  console.log("[Agentic] Starting 3-phase pipeline");
+
+  // Phase 1: Extract compact schemas from all files
+  onProgress?.("extracting", "Phase 1/3: Extracting schemas from files...");
+  const [sourceTables, targetTables] = await Promise.all([
+    extractAllSchemas(client, model, sourceFiles, maxTokens, onProgress),
+    extractAllSchemas(client, model, targetFiles, maxTokens, onProgress),
+  ]);
+
+  if (!sourceTables.length || !targetTables.length) {
+    throw new Error("Could not extract any tables from the uploaded files");
+  }
+
+  // Phase 2: Match source tables → target tables
+  onProgress?.("matching", "Phase 2/3: Matching source tables to target tables...");
+  const pairs = await matchTablePairs(client, model, sourceTables, targetTables, maxTokens, rules, onProgress);
+
+  if (!pairs.length) {
+    throw new Error("Could not match any source tables to target tables");
+  }
+
+  // Phase 3: Map columns for each pair (parallel batches of 2)
+  onProgress?.("mapping", "Phase 3/3: Mapping columns for each table pair...");
+  const allResults: MappingResult[] = [];
+  const pairBatchSize = 2;
+
+  for (let i = 0; i < pairs.length; i += pairBatchSize) {
+    const batch = pairs.slice(i, i + pairBatchSize);
+    onProgress?.("mapping", `Mapping columns: ${batch.map((p) => p.target_table).join(", ")} (${i + 1}-${Math.min(i + pairBatchSize, pairs.length)}/${pairs.length})`);
+
+    const results = await Promise.all(
+      batch.map((pair) =>
+        mapTablePair(client, model, pair, sourceFiles, targetFiles, sourceTables, targetTables, maxTokens, userInstruction, rules)
+      )
+    );
+    allResults.push(...results);
+  }
+
+  const merged = mergeResults(allResults);
+  console.log(`[Agentic] Pipeline complete: ${merged.mappings.length} mappings from ${pairs.length} table pairs`);
+  onProgress?.("done", `Complete: ${merged.mappings.length} mappings from ${pairs.length} table pairs`);
+
+  return merged;
+}
+
 /* ── Main entry point: 5-tier progressive strategy ── */
 
 export async function mapSchema(
   sourceFiles: RawFile[],
   targetFiles: RawFile[],
   userInstruction?: string,
-  rules?: string
+  rules?: string,
+  onProgress?: ProgressCallback
 ): Promise<MappingResult> {
   const client = getClient();
   const model =
@@ -322,6 +665,7 @@ export async function mapSchema(
 
   if (fullTokens <= maxTokens) {
     console.log("[Token mgmt] Tier 1: fits in context, sending as-is");
+    onProgress?.("mapping", "Sending all files to LLM (fits in context)...");
     const userPrompt = buildUserPrompt(sourceFiles, targetFiles, userInstruction, rules);
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
@@ -334,6 +678,7 @@ export async function mapSchema(
 
   if (lightTokens <= maxTokens) {
     console.log("[Token mgmt] Tier 2 (light): fits after light compression");
+    onProgress?.("mapping", "Light compression applied, sending to LLM...");
     const userPrompt = buildUserPrompt(lightSource, lightTarget, userInstruction, rules);
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
@@ -346,6 +691,7 @@ export async function mapSchema(
 
   if (medTokens <= maxTokens) {
     console.log("[Token mgmt] Tier 3 (medium): fits after medium compression");
+    onProgress?.("mapping", "Medium compression applied, sending to LLM...");
     const userPrompt = buildUserPrompt(medSource, medTarget, userInstruction, rules);
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
@@ -358,32 +704,20 @@ export async function mapSchema(
 
   if (heavyTokens <= maxTokens) {
     console.log("[Token mgmt] Tier 4 (heavy): fits after heavy compression");
+    onProgress?.("mapping", "Heavy compression applied, sending to LLM...");
     const userPrompt = buildUserPrompt(heavySource, heavyTarget, userInstruction, rules);
     return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
   }
 
-  // Tier 5: Chunk by target tables and run in parallel (uses heavy compression internally)
-  const chunks = chunkFiles(sourceFiles, targetFiles, maxTokens, userInstruction, rules);
-  console.log(`[Token mgmt] Tier 5 (chunking): splitting into ${chunks.length} chunks`);
+  // Tier 5: 3-Phase Agentic Pipeline (Map-Reduce)
+  // Files are too large even after heavy compression → use multi-step agent approach
+  console.log(`[Token mgmt] Tier 5 (agentic): prompt still ~${heavyTokens} tokens after heavy compression, switching to 3-phase pipeline`);
+  onProgress?.("extracting", "Files too large for single call. Starting agentic 3-phase pipeline...");
 
-  const chunkResults = await Promise.all(
-    chunks.map((chunk, i) => {
-      console.log(`[Token mgmt] Sending chunk ${i + 1}/${chunks.length} (${chunk.targetFiles.map((f) => f.fileName).join(", ")})`);
-      const userPrompt = buildChunkPrompt(
-        chunk.sourceFiles,
-        chunk.targetFiles,
-        i + 1,
-        chunks.length,
-        userInstruction,
-        rules
-      );
-      return callLLM(client, model, SYSTEM_PROMPT, userPrompt);
-    })
+  return agenticMapSchema(
+    client, model, sourceFiles, targetFiles, maxTokens,
+    userInstruction, rules, onProgress
   );
-
-  const merged = mergeResults(chunkResults);
-  console.log(`[Token mgmt] Merged ${chunkResults.length} chunk results: ${merged.mappings.length} total mappings`);
-  return merged;
 }
 
 /**

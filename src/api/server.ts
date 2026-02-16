@@ -34,6 +34,51 @@ app.post("/api/map-schema", async (req, res) => {
   }
 });
 
+// SSE endpoint for progress-aware mapping (used by frontend for real-time updates)
+app.post("/api/map-schema-stream", async (req, res) => {
+  const { source_files, target_files, user_instruction, rules } = req.body as {
+    source_files: RawFile[];
+    target_files: RawFile[];
+    user_instruction?: string;
+    rules?: string;
+  };
+
+  if (!source_files?.length || !target_files?.length) {
+    res.status(400).json({
+      error: "Both source_files and target_files are required",
+    });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const sendEvent = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const result = await mapSchema(
+      source_files,
+      target_files,
+      user_instruction,
+      rules,
+      (phase, detail) => {
+        sendEvent("progress", { phase, detail });
+      }
+    );
+    sendEvent("result", result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    sendEvent("error", { error: message });
+  } finally {
+    res.end();
+  }
+});
+
 app.post("/api/refine-mapping", async (req, res) => {
   try {
     const {
