@@ -1,0 +1,32 @@
+{
+  "name": "schema-mapping-migrator",
+  "version": "1.0.0",
+  "description": "AI-powered schema mapping for data migration",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:frontend\"",
+    "dev:api": "tsx watch src/api/server.ts",
+    "dev:frontend": "vite",
+    "build": "tsc && vite build",
+    "start": "node dist/api/server.js",
+    "map": "tsx src/cli/map.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.0",
+    "jspdf": "^4.1.0",
+    "jspdf-autotable": "^5.0.7",
+    "openai": "^4.77.0",
+    "prismjs": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.9.0",
+    "concurrently": "^9.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
