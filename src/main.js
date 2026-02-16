@@ -803,6 +803,7 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let eventType = "";
 
       function processChunk() {
         reader.read().then(({ done, value }) => {
@@ -815,7 +816,6 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 
-          let eventType = "";
           for (const line of lines) {
             if (line.startsWith("event: ")) {
               eventType = line.substring(7).trim();
@@ -824,9 +824,11 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
               try {
                 const parsed = JSON.parse(data);
                 if (eventType === "progress") {
-                  const phaseIcons = { extracting: "\u{1F50D}", matching: "\u{1F517}", mapping: "\u{1F4CB}", done: "\u2705" };
-                  const icon = phaseIcons[parsed.phase] || "";
-                  updateThinkingStatus(`${icon} ${parsed.detail}`);
+                  const phaseIcons = { extracting: "🔍", matching: "🔗", mapping: "📋", done: "✅" };
+                  const icon = phaseIcons[parsed.phase] || "▸";
+                  appendStreamLine(`${icon} ${parsed.detail}`);
+                } else if (eventType === "token") {
+                  appendStreamToken(parsed.token);
                 } else if (eventType === "result") {
                   resolve(parsed);
                   return;
@@ -835,6 +837,7 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
                   return;
                 }
               } catch { /* ignore parse errors in SSE */ }
+              eventType = "";
             }
           }
           processChunk();
@@ -910,24 +913,59 @@ async function sendChatMessage() {
   }
 }
 
+let streamLines = [];
+let streamTokens = "";
+
 function addThinking() {
+  streamLines = [];
+  streamTokens = "";
   const el = document.createElement("div");
-  el.className = "chat-message assistant thinking";
+  el.className = "chat-message assistant";
   el.id = "thinking-indicator";
-  el.innerHTML = '<div class="thinking-content"><div class="dots"><span></span><span></span><span></span></div><div class="thinking-status" id="thinking-status"></div></div>';
+  el.innerHTML = `
+    <div class="role">AI</div>
+    <div class="thinking-body">
+      <div class="stream-log" id="stream-log"></div>
+      <div class="stream-tokens" id="stream-tokens"></div>
+      <div class="thinking-dots"><div class="dots"><span></span><span></span><span></span></div></div>
+    </div>`;
   chatMessages.appendChild(el);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-function updateThinkingStatus(text) {
-  const el = document.getElementById("thinking-status");
-  if (el) {
-    el.textContent = text;
+function appendStreamLine(text) {
+  streamLines.push(text);
+  const log = document.getElementById("stream-log");
+  if (log) {
+    const line = document.createElement("div");
+    line.className = "stream-line";
+    line.textContent = text;
+    log.appendChild(line);
+  }
+  // Clear token area when a new phase starts
+  streamTokens = "";
+  const tokenEl = document.getElementById("stream-tokens");
+  if (tokenEl) tokenEl.textContent = "";
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendStreamToken(token) {
+  streamTokens += token;
+  const tokenEl = document.getElementById("stream-tokens");
+  if (tokenEl) {
+    tokenEl.textContent = streamTokens;
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 }
 
 function removeThinking() {
+  // Remove just the dots
+  const dots = document.querySelector("#thinking-indicator .thinking-dots");
+  if (dots) dots.remove();
+  // Persist the stream lines into chatHistory so they survive re-renders
+  if (streamLines.length > 0) {
+    chatHistory.push({ role: "assistant", content: streamLines.join("\n"), isStreamLog: true });
+  }
   document.getElementById("thinking-indicator")?.remove();
 }
 
@@ -940,7 +978,12 @@ function renderChat() {
   for (const m of chatHistory) {
     const el = document.createElement("div");
     el.className = `chat-message ${m.role}`;
-    el.innerHTML = `<div class="role">${m.role === "user" ? "You" : "AI"}</div><div>${esc(m.content)}</div>`;
+    if (m.isStreamLog) {
+      const logLines = m.content.split("\n").map((l) => `<div class="stream-line">${esc(l)}</div>`).join("");
+      el.innerHTML = `<div class="role">AI</div><div class="stream-log">${logLines}</div>`;
+    } else {
+      el.innerHTML = `<div class="role">${m.role === "user" ? "You" : "AI"}</div><div>${esc(m.content)}</div>`;
+    }
     chatMessages.appendChild(el);
   }
   chatMessages.scrollTop = chatMessages.scrollHeight;

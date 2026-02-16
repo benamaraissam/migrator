@@ -53,11 +53,16 @@ app.post("/api/map-schema-stream", async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
     Connection: "keep-alive",
   });
+  res.flushHeaders();
 
   const sendEvent = (event: string, data: unknown) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
+      (res as unknown as { flush: () => void }).flush();
+    }
   };
 
   try {
@@ -68,6 +73,9 @@ app.post("/api/map-schema-stream", async (req, res) => {
       rules,
       (phase, detail) => {
         sendEvent("progress", { phase, detail });
+      },
+      (token) => {
+        sendEvent("token", { token });
       }
     );
     sendEvent("result", result);
