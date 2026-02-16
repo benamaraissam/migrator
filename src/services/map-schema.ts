@@ -1,6 +1,6 @@
 import OpenAI from "openai";
-import type { Schema, MappingResult, MappingItem } from "../types.js";
-import { buildUserPrompt, SYSTEM_PROMPT } from "../prompts/schema-mapping.js";
+import type { MappingResult, MappingItem } from "../types.js";
+import { buildUserPrompt, SYSTEM_PROMPT, type RawFile } from "../prompts/schema-mapping.js";
 
 const HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
@@ -18,7 +18,6 @@ function getClient(): OpenAI {
     );
   }
 
-  // Hugging Face or custom OpenAI-compatible base URL
   if (baseUrl || process.env.HF_TOKEN || process.env.HUGGINGFACE_HUB_TOKEN) {
     return new OpenAI({
       apiKey: key,
@@ -30,13 +29,13 @@ function getClient(): OpenAI {
 }
 
 export async function mapSchema(
-  sourceSchema: Schema,
-  targetSchema: Schema,
+  sourceFiles: RawFile[],
+  targetFiles: RawFile[],
   userInstruction?: string,
   rules?: string
 ): Promise<MappingResult> {
   const client = getClient();
-  const userPrompt = buildUserPrompt(sourceSchema, targetSchema, userInstruction, rules);
+  const userPrompt = buildUserPrompt(sourceFiles, targetFiles, userInstruction, rules);
 
   const model =
     process.env.LLM_MODEL ||
@@ -92,16 +91,78 @@ function normalizeMapping(m: unknown): {
 } | null {
   if (!m || typeof m !== "object") return null;
   const row = m as Record<string, unknown>;
-  const target = row.target_column ?? row.target;
+
+  const targetTable = typeof row.target_table === "string" ? row.target_table : "";
+  const sourceTable = typeof row.source_table === "string" ? row.source_table : "";
+
+  let target = row.target_column ?? row.target;
+  if (!target || typeof target !== "string") return null;
+
+  // Prefix target_column with target_table if not already prefixed
+  if (targetTable && !target.includes(".")) {
+    target = `${targetTable}.${target}`;
+  }
+
   const source = row.source_column ?? row.source ?? row.source_columns;
-  const sourceColumns = Array.isArray(source)
+  let sourceColumns = Array.isArray(source)
     ? source.filter((c): c is string => typeof c === "string")
     : typeof source === "string"
       ? [source]
       : [];
-  if (!target || typeof target !== "string") return null;
+
+  const transformationRule =
+    typeof row.transformation_rule === "string"
+      ? row.transformation_rule
+      : typeof row.transformation === "string"
+        ? row.transformation
+        : null;
+
+  const reasoning =
+    typeof row.reasoning === "string"
+      ? row.reasoning
+      : typeof row.reason === "string"
+        ? row.reason
+        : "";
+
+  // Filter source_columns: only keep columns actually referenced in
+  // the transformation rule or that match the target column name.
+  // This fixes LLMs that dump all table columns into source_columns.
+  if (sourceColumns.length > 1 && transformationRule) {
+    const rule = transformationRule.toLowerCase();
+    const filtered = sourceColumns.filter((c) => {
+      const bare = c.toLowerCase();
+      return rule.includes(bare);
+    });
+    if (filtered.length > 0) {
+      sourceColumns = filtered;
+    }
+  }
+
+  // If still too many columns and no transformation (direct mapping),
+  // a 1-to-1 mapping should only have 1 source column.
+  // Try to match by target column name similarity.
+  if (sourceColumns.length > 3 && !transformationRule) {
+    const tgtCol = ((target as string).includes(".")
+      ? (target as string).split(".").pop()!
+      : (target as string)).toLowerCase();
+    const best = sourceColumns.filter((c) => {
+      const bare = (c.includes(".") ? c.split(".").pop()! : c).toLowerCase();
+      return bare === tgtCol || bare.includes(tgtCol) || tgtCol.includes(bare);
+    });
+    if (best.length > 0 && best.length < sourceColumns.length) {
+      sourceColumns = best;
+    }
+  }
+
+  // Prefix source columns with source_table if not already prefixed
+  if (sourceTable) {
+    sourceColumns = sourceColumns.map((c) =>
+      c.includes(".") ? c : `${sourceTable}.${c}`
+    );
+  }
+
   return {
-    target_column: target,
+    target_column: target as string,
     source_columns: sourceColumns,
     confidence_score: typeof row.confidence_score === "number"
       ? row.confidence_score
@@ -109,18 +170,8 @@ function normalizeMapping(m: unknown): {
         ? row.confidence
         : 0,
     match_type: isValidMatchType(row.match_type) ? row.match_type : "semantic",
-    reasoning:
-      typeof row.reasoning === "string"
-        ? row.reasoning
-        : typeof row.reason === "string"
-          ? row.reason
-          : "",
-    transformation_rule:
-      typeof row.transformation_rule === "string"
-        ? row.transformation_rule
-        : typeof row.transformation === "string"
-          ? row.transformation
-          : null,
+    reasoning,
+    transformation_rule: transformationRule,
   };
 }
 
@@ -188,7 +239,7 @@ function validateResult(raw: unknown): MappingResult {
 
 const REFINE_SYSTEM_PROMPT = `You are an expert Data Migration and Schema Mapping AI Agent engaged in a conversation to refine a schema mapping.
 
-You have already produced an initial mapping between SOURCE and TARGET schemas. The user is now providing feedback or questions to improve it.
+You have already produced an initial mapping from raw SOURCE and TARGET files. The user is now providing feedback or questions to improve it.
 
 Your response MUST be valid JSON only, in this exact format:
 {
@@ -199,14 +250,14 @@ Your response MUST be valid JSON only, in this exact format:
 Rules:
 - Incorporate the user's feedback into the mapping. Only change what they asked about.
 - Keep the same JSON structure: mappings[], unmapped_source_columns[], unmapped_target_columns[], global_confidence, analysis_summary.
-- Never invent columns. Only use columns that exist in the schemas.
+- Never invent columns. Only use columns that exist in the raw files.
 - The "message" field should be 1-3 sentences, friendly and direct.
 - If the user asks a question (e.g. "Why did you map X to Y?"), answer in "message" and optionally adjust the mapping if they suggest changes.
 - Return ONLY the JSON object, no other text.`;
 
 export interface RefineInput {
-  sourceSchema: Schema;
-  targetSchema: Schema;
+  sourceFiles: RawFile[];
+  targetFiles: RawFile[];
   currentMapping: MappingResult;
   messages: { role: "user" | "assistant"; content: string }[];
   userMessage: string;
@@ -220,23 +271,22 @@ export interface RefineOutput {
 
 export async function refineMapping(input: RefineInput): Promise<RefineOutput> {
   const client = getClient();
-  const { sourceSchema, targetSchema, currentMapping, messages, userMessage, rules } = input;
+  const { sourceFiles, targetFiles, currentMapping, messages, userMessage, rules } = input;
 
   const model =
     process.env.LLM_MODEL ||
     process.env.OPENAI_MODEL ||
     "meta-llama/Llama-3.2-3B-Instruct";
 
-  let contextBlock = `
-SOURCE_SCHEMA:
-${JSON.stringify(sourceSchema, null, 2)}
-
-TARGET_SCHEMA:
-${JSON.stringify(targetSchema, null, 2)}
-
-CURRENT_MAPPING:
-${JSON.stringify(currentMapping, null, 2)}
-`;
+  let contextBlock = `\n=== SOURCE FILES ===\n`;
+  for (const f of sourceFiles) {
+    contextBlock += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
+  }
+  contextBlock += `\n=== TARGET FILES ===\n`;
+  for (const f of targetFiles) {
+    contextBlock += `\n--- File: ${f.fileName} ---\n${f.content}\n`;
+  }
+  contextBlock += `\nCURRENT_MAPPING:\n${JSON.stringify(currentMapping, null, 2)}\n`;
 
   if (rules?.trim()) {
     contextBlock += `\nADDITIONAL RULES (you MUST follow these):\n${rules.trim()}\n`;

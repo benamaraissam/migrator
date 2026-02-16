@@ -1,4 +1,4 @@
-import { parseFilesWithContent, parseFiles, parseDelimited, detectDelimiter } from "./parse-file.js";
+import { parseFilesWithContent, parseDelimited, detectDelimiter } from "./parse-file.js";
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
 import Prism from "prismjs";
@@ -49,8 +49,6 @@ let activeSource = null;
 let activeTarget = null;
 let currentMapping = null;
 let chatHistory = [];
-let lastSourceSchema = null;
-let lastTargetSchema = null;
 let rulesFiles = [];
 let activeRule = null;
 const fileSeparators = {};
@@ -581,8 +579,6 @@ loadExampleBtn.addEventListener("click", () => {
   activeTarget = targetFiles[0]?.fileName ?? null;
   currentMapping = null;
   chatHistory = [];
-  lastSourceSchema = null;
-  lastTargetSchema = null;
   renderTree(sourceTree, sourceEmpty, sourceFiles, activeSource, "source");
   renderTree(targetTree, targetEmpty, targetFiles, activeTarget, "target");
   if (activeSource) selectFile("source", activeSource);
@@ -797,37 +793,27 @@ async function sendChatMessage() {
 
   const isFirstMessage = !currentMapping;
 
+  const rawSourceFiles = sourceFiles.map((f) => ({ fileName: f.fileName, content: f.rawContent }));
+  const rawTargetFiles = targetFiles.map((f) => ({ fileName: f.fileName, content: f.rawContent }));
+
   if (isFirstMessage) {
     if (!sourceFiles.length || !targetFiles.length) {
       showError("Add at least one file to Source and Target first.");
       chatHistory.pop(); renderChat(); chatSend.disabled = false;
       return;
     }
-    const srcBlobs = sourceFiles.map((f) => new File([f.rawContent], f.fileName, { type: "text/plain" }));
-    const tgtBlobs = targetFiles.map((f) => new File([f.rawContent], f.fileName, { type: "text/plain" }));
-    let sourceSchema, targetSchema;
-    try {
-      sourceSchema = await parseFiles(srcBlobs);
-      targetSchema = await parseFiles(tgtBlobs);
-    } catch {
-      showError("Could not parse files.");
-      chatHistory.pop(); renderChat(); chatSend.disabled = false;
-      return;
-    }
-    if (!sourceSchema?.columns?.length || !targetSchema?.columns?.length) {
-      showError("Could not infer schemas from files.");
-      chatHistory.pop(); renderChat(); chatSend.disabled = false;
-      return;
-    }
-    lastSourceSchema = sourceSchema;
-    lastTargetSchema = targetSchema;
 
     try {
       addThinking();
       const res = await fetch("/api/map-schema", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_schema: sourceSchema, target_schema: targetSchema, user_instruction: text, rules: getRulesText() }),
+        body: JSON.stringify({
+          source_files: rawSourceFiles,
+          target_files: rawTargetFiles,
+          user_instruction: text,
+          rules: getRulesText(),
+        }),
       });
       const data = await res.json();
       removeThinking();
@@ -848,8 +834,8 @@ async function sendChatMessage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          source_schema: lastSourceSchema,
-          target_schema: lastTargetSchema,
+          source_files: rawSourceFiles,
+          target_files: rawTargetFiles,
           current_mapping: currentMapping,
           messages: chatHistory.slice(0, -1),
           user_message: text,
