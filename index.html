@@ -130,6 +130,12 @@
           <div class="mapping-header">
             <span class="mapping-title">Mapping Result</span>
             <span class="mapping-confidence" id="global-confidence-badge"></span>
+            <!-- Unmapped filter toggle -->
+            <button type="button" class="unmapped-filter-btn" id="unmapped-filter-btn" title="Show unmapped only" style="display:none">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+              <span>Unmapped</span>
+              <span class="unmapped-filter-badge" id="unmapped-filter-count"></span>
+            </button>
             <!-- Export dropdown -->
             <div class="export-dropdown" id="export-dropdown">
               <button type="button" class="ctrl-btn export-trigger" id="export-trigger" title="Export">

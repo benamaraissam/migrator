@@ -61,6 +61,7 @@ let activeRule = null;
 const fileSeparators = {};
 let currentAbortController = null;
 let isGenerating = false;
+let showUnmappedOnly = false;
 
 const DELIMITERS = [
   { value: ",",  label: "Comma (,)" },
@@ -890,6 +891,14 @@ mappingRestore.addEventListener("click", () => {
   setMappingState("normal");
 });
 
+/* ── Unmapped filter toggle ── */
+document.getElementById("unmapped-filter-btn").addEventListener("click", () => {
+  showUnmappedOnly = !showUnmappedOnly;
+  const btn = document.getElementById("unmapped-filter-btn");
+  btn.classList.toggle("active", showUnmappedOnly);
+  document.getElementById("mapping-body").classList.toggle("unmapped-only", showUnmappedOnly);
+});
+
 /* ── Chat ── */
 chatSend.addEventListener("click", sendChatMessage);
 chatInput.addEventListener("keydown", (e) => {
@@ -1238,6 +1247,7 @@ function clearSession() {
   chatHistory = [];
   validatedRows.clear();
   originalMappings.clear();
+  showUnmappedOnly = false;
   renderTree(sourceTree, sourceEmpty, sourceFiles, null, "source");
   renderTree(targetTree, targetEmpty, targetFiles, null, "target");
   sourceContent.innerHTML = '<div class="placeholder-text">Select a file to preview</div>';
@@ -1249,6 +1259,9 @@ function clearSession() {
   unmappedContainer.classList.add("hidden");
   analysisSummary.textContent = "";
   globalConfBadge.textContent = "";
+  const filterBtn = document.getElementById("unmapped-filter-btn");
+  if (filterBtn) { filterBtn.classList.remove("active"); filterBtn.style.display = "none"; }
+  document.getElementById("mapping-body").classList.remove("unmapped-only");
   renderChat();
 }
 
@@ -1533,6 +1546,27 @@ function groupMappings(mappings) {
   return groups;
 }
 
+function buildUnifiedGroups(mappings, unmappedTargetCols) {
+  const groups = groupMappings(mappings);
+  for (const col of unmappedTargetCols || []) {
+    const dotIdx = col.indexOf(".");
+    const table = dotIdx > 0 ? col.substring(0, dotIdx) : "_default";
+    const shortName = dotIdx > 0 ? col.substring(dotIdx + 1) : col;
+    if (!groups.has(table)) groups.set(table, []);
+    groups.get(table).push({
+      source_columns: [],
+      target_column: col,
+      _col: shortName,
+      _globalIdx: -1,
+      _unmapped: true,
+    });
+  }
+  for (const [, items] of groups) {
+    items.sort((a, b) => (a._unmapped ? 1 : 0) - (b._unmapped ? 1 : 0));
+  }
+  return groups;
+}
+
 function inferSourceTable(sourceColumns) {
   const tables = new Set();
   for (const s of sourceColumns) {
@@ -1554,20 +1588,45 @@ function renderResult(data) {
   analysisSummary.textContent = data.analysis_summary || "";
 
   const mappings = data.mappings || [];
-  const groups = groupMappings(mappings);
   const allSourceCols = getAllSourceColumns();
+  const mappedSourceCols = new Set();
+  for (const m of mappings) {
+    for (const sc of m.source_columns || []) mappedSourceCols.add(sc);
+  }
+  const availableSourcesForUnmapped = allSourceCols.filter((sc) => !mappedSourceCols.has(sc));
+
+  const groups = buildUnifiedGroups(mappings, data.unmapped_target_columns);
+  const totalUnmapped = (data.unmapped_target_columns || []).length;
+
+  /* Update filter toggle badge */
+  const filterBadge = document.getElementById("unmapped-filter-count");
+  if (filterBadge) filterBadge.textContent = totalUnmapped > 0 ? totalUnmapped : "";
+  const filterBtn = document.getElementById("unmapped-filter-btn");
+  if (filterBtn) {
+    filterBtn.classList.toggle("active", showUnmappedOnly);
+    filterBtn.style.display = totalUnmapped > 0 ? "" : "none";
+  }
 
   let html = "";
   for (const [table, items] of groups) {
+    const mappedItems = items.filter((m) => !m._unmapped);
+    const unmappedItems = items.filter((m) => m._unmapped);
     const srcTables = new Set();
-    for (const m of items) {
+    for (const m of mappedItems) {
       for (const t of inferSourceTable(m.source_columns || [])) srcTables.add(t);
     }
     const srcLabel = srcTables.size
       ? `<span class="group-source-label">from <span>${esc([...srcTables].join(", "))}</span></span>`
       : "";
-    const avgConf = items.reduce((s, m) => s + confPct(m.confidence_score ?? m.confidence), 0) / items.length;
+    const avgConf = mappedItems.length
+      ? mappedItems.reduce((s, m) => s + confPct(m.confidence_score ?? m.confidence), 0) / mappedItems.length
+      : 0;
     const confCol = confColor(avgConf > 1 ? avgConf : avgConf / 100);
+
+    const countLabel = unmappedItems.length
+      ? `${items.length} column${items.length !== 1 ? "s" : ""} <span class="group-unmapped-note">(${unmappedItems.length} unmapped)</span>`
+      : `${items.length} column${items.length !== 1 ? "s" : ""}`;
+    const confLabel = mappedItems.length ? `<span class="group-conf" style="color:${confCol}">${avgConf.toFixed(0)}%</span>` : "";
 
     html += `
       <div class="mapping-group">
@@ -1575,8 +1634,8 @@ function renderResult(data) {
           <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           <span class="group-label">${esc(table === "_default" ? "Mappings" : table)}</span>
           ${srcLabel}
-          <span class="group-count">${items.length} column${items.length !== 1 ? "s" : ""}</span>
-          <span class="group-conf" style="color:${confCol}">${avgConf.toFixed(0)}%</span>
+          <span class="group-count">${countLabel}</span>
+          ${confLabel}
         </div>
         <div class="mapping-group-body">
           <table class="mapping-table">
@@ -1587,61 +1646,84 @@ function renderResult(data) {
     `;
 
     for (const m of items) {
-      const globalIdx = m._globalIdx;
-      const src = (m.source_columns || []).join(", ") || "—";
-      const pct = confPct(m.confidence_score ?? m.confidence);
-      const color = confColor(m.confidence_score ?? m.confidence);
-      const mt = m.match_type || "semantic";
-      const transform = m.transformation_rule ?? m.transformation ?? "";
-      const isValidated = validatedRows.has(globalIdx);
-      const wasEdited = originalMappings.has(globalIdx);
-      const rowClass = isValidated ? " validated-row" : "";
+      if (m._unmapped) {
+        html += `
+          <tr class="unmapped-row" data-target-col="${esc(m.target_column)}">
+            <td class="col-source"><span class="unmapped-dash">—</span></td>
+            <td class="col-arrow">→</td>
+            <td class="col-target">${esc(m._col)}</td>
+            <td class="col-type"><span class="unmapped-dash">—</span></td>
+            <td><span class="unmapped-dash">—</span></td>
+            <td class="col-transform"><span class="unmapped-dash">—</span></td>
+            <td class="col-status"><span class="status-badge status-unmapped">Unmapped</span></td>
+            <td class="col-actions">
+              <div class="mapping-actions">
+                <button type="button" class="action-btn map-btn" data-col="${esc(m.target_column)}" title="Map this column">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+              </div>
+            </td>
+          </tr>`;
+      } else {
+        const globalIdx = m._globalIdx;
+        const src = (m.source_columns || []).join(", ") || "—";
+        const pct = confPct(m.confidence_score ?? m.confidence);
+        const color = confColor(m.confidence_score ?? m.confidence);
+        const mt = m.match_type || "semantic";
+        const transform = m.transformation_rule ?? m.transformation ?? "";
+        const isValidated = validatedRows.has(globalIdx);
+        const wasEdited = originalMappings.has(globalIdx);
+        const rowClass = isValidated ? " validated-row" : "";
 
-      const statusHtml = isValidated
-        ? `<span class="status-badge status-validated"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Validated</span>`
-        : `<span class="status-badge status-pending">Pending</span>`;
+        const statusHtml = isValidated
+          ? `<span class="status-badge status-validated"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Validated</span>`
+          : `<span class="status-badge status-pending">Pending</span>`;
 
-      html += `
-        <tr class="${rowClass}" data-mapping-idx="${globalIdx}">
-          <td class="col-source">${esc(src)}</td>
-          <td class="col-arrow">→</td>
-          <td class="col-target">${esc(m._col || m.target_column)}</td>
-          <td class="col-type"><span class="match-badge ${esc(mt)}">${esc(mt)}</span></td>
-          <td>
-            <div class="conf-bar">
-              <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${pct}%;background:${color}"></div></div>
-              <span class="conf-bar-label" style="color:${color}">${pct.toFixed(0)}%</span>
-            </div>
-          </td>
-          <td class="col-transform">${transform ? esc(transform) : '<span class="no-transform">direct</span>'}</td>
-          <td class="col-status">${statusHtml}</td>
-          <td class="col-actions">
-            <div class="mapping-actions">
-              ${!isValidated ? `
-              <button type="button" class="action-btn validate-btn" data-idx="${globalIdx}" title="Validate mapping">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              </button>` : ""}
-              <button type="button" class="action-btn change-btn" data-idx="${globalIdx}" title="Change source column">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </button>
-              ${isValidated || wasEdited ? `
-              <button type="button" class="action-btn rollback-btn" data-idx="${globalIdx}" title="Rollback to original">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
-              </button>` : ""}
-              <button type="button" class="action-btn unmap-btn" data-idx="${globalIdx}" title="Remove mapping">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-          </td>
-        </tr>
-        ${m.reasoning ? `<tr class="reason-row${rowClass}"><td colspan="8">${esc(m.reasoning)}</td></tr>` : ""}
-      `;
+        html += `
+          <tr class="mapped-row${rowClass}" data-mapping-idx="${globalIdx}">
+            <td class="col-source">${esc(src)}</td>
+            <td class="col-arrow">→</td>
+            <td class="col-target">${esc(m._col || m.target_column)}</td>
+            <td class="col-type"><span class="match-badge ${esc(mt)}">${esc(mt)}</span></td>
+            <td>
+              <div class="conf-bar">
+                <div class="conf-bar-track"><div class="conf-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+                <span class="conf-bar-label" style="color:${color}">${pct.toFixed(0)}%</span>
+              </div>
+            </td>
+            <td class="col-transform">${transform ? esc(transform) : '<span class="no-transform">direct</span>'}</td>
+            <td class="col-status">${statusHtml}</td>
+            <td class="col-actions">
+              <div class="mapping-actions">
+                ${!isValidated ? `
+                <button type="button" class="action-btn validate-btn" data-idx="${globalIdx}" title="Validate mapping">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                </button>` : ""}
+                <button type="button" class="action-btn change-btn" data-idx="${globalIdx}" title="Change source column">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                ${isValidated || wasEdited ? `
+                <button type="button" class="action-btn rollback-btn" data-idx="${globalIdx}" title="Rollback to original">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
+                </button>` : ""}
+                <button type="button" class="action-btn unmap-btn" data-idx="${globalIdx}" title="Remove mapping">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </td>
+          </tr>
+          ${m.reasoning ? `<tr class="reason-row${rowClass}"><td colspan="8">${esc(m.reasoning)}</td></tr>` : ""}`;
+      }
     }
 
     html += `</tbody></table></div></div>`;
   }
 
   mappingGroups.innerHTML = html;
+
+  /* Apply filter state */
+  const mappingBody = document.getElementById("mapping-body");
+  mappingBody.classList.toggle("unmapped-only", showUnmappedOnly);
 
   /* Attach action button listeners */
   mappingGroups.querySelectorAll(".validate-btn").forEach((btn) => {
@@ -1672,82 +1754,16 @@ function renderResult(data) {
     });
   });
 
-  /* ── Unmapped section ── */
-  const allTargetCols = getAllTargetColumns();
-  const mappedSourceCols = new Set();
-  const mappedTargetCols = new Set();
-  for (const m of mappings) {
-    for (const sc of m.source_columns || []) mappedSourceCols.add(sc);
-    if (m.target_column) mappedTargetCols.add(m.target_column);
-  }
-
-  const hasUnmapped = (data.unmapped_target_columns?.length || 0) > 0;
-
-  if (hasUnmapped) {
-    unmappedContainer.classList.remove("hidden");
-    let uhtml = "";
-
-    /* Helper: group column names by table (split on first dot) */
-    function groupByTable(columns) {
-      const groups = new Map();
-      for (const col of columns) {
-        const dotIdx = col.indexOf(".");
-        const table = dotIdx > 0 ? col.substring(0, dotIdx) : "_ungrouped";
-        if (!groups.has(table)) groups.set(table, []);
-        groups.get(table).push(col);
-      }
-      return groups;
-    }
-
-    /* Helper: extract column name after table prefix */
-    function colShortName(col) {
-      const dotIdx = col.indexOf(".");
-      return dotIdx > 0 ? col.substring(dotIdx + 1) : col;
-    }
-
-    const unmappedTargetGroups = groupByTable(data.unmapped_target_columns);
-    const totalUnmapped = data.unmapped_target_columns.length;
-    uhtml += `<h4>Unmapped Target Columns <span class="unmapped-total">${totalUnmapped}</span></h4>`;
-
-    for (const [table, cols] of unmappedTargetGroups) {
-      uhtml += `
-        <div class="unmapped-group">
-          <div class="unmapped-group-header" onclick="this.parentElement.classList.toggle('collapsed')">
-            <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            <span class="unmapped-group-label">${esc(table === "_ungrouped" ? "Other" : table)}</span>
-            <span class="unmapped-group-count">${cols.length} column${cols.length !== 1 ? "s" : ""}</span>
-          </div>
-          <div class="unmapped-group-body">`;
-
-      for (const col of cols) {
-        uhtml += `
-            <div class="unmapped-item" data-side="target" data-col="${esc(col)}">
-              <button type="button" class="unmapped-picker-trigger" data-side="target" data-col="${esc(col)}" title="Choose source column">
-                <span class="unmapped-picker-label">Select source column...</span>
-                <svg class="unmapped-picker-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <svg class="unmapped-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7 7 7-7 7"/></svg>
-              <span class="unmapped-col-name target">${esc(colShortName(col))}</span>
-            </div>`;
-      }
-
-      uhtml += `</div></div>`;
-    }
-
-    unmappedContainer.innerHTML = uhtml;
-
-    /* Attach unmapped picker: same custom dropdown as mapped columns */
-    const availableSourcesForUnmapped = allSourceCols.filter((sc) => !mappedSourceCols.has(sc));
-    unmappedContainer.querySelectorAll(".unmapped-picker-trigger").forEach((btn) => {
-      const targetCol = btn.dataset.col;
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        showUnmappedSourcePicker(btn, targetCol, availableSourcesForUnmapped);
-      });
+  mappingGroups.querySelectorAll(".map-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showUnmappedSourcePicker(btn, btn.dataset.col, availableSourcesForUnmapped);
     });
-  } else {
-    unmappedContainer.classList.add("hidden");
-  }
+  });
+
+  /* Hide the old unmapped container — no longer used */
+  unmappedContainer.classList.add("hidden");
+  unmappedContainer.innerHTML = "";
 }
 
 /* Show a floating picker to choose a different source column */
@@ -1949,14 +1965,17 @@ function exportPDF(data) {
     y += 18;
   }
 
-  const groups = groupMappings(data.mappings || []);
+  const groups = buildUnifiedGroups(data.mappings || [], data.unmapped_target_columns);
 
   for (const [table, items] of groups) {
     if (y > H - 40) { doc.addPage(); y = 14; }
 
+    const mappedItems = items.filter((m) => !m._unmapped);
     const srcTables = new Set();
-    for (const m of items) for (const t of inferSourceTable(m.source_columns || [])) srcTables.add(t);
-    const avgConf = items.reduce((s, m) => s + confPct(m.confidence_score ?? m.confidence), 0) / items.length;
+    for (const m of mappedItems) for (const t of inferSourceTable(m.source_columns || [])) srcTables.add(t);
+    const avgConf = mappedItems.length
+      ? mappedItems.reduce((s, m) => s + confPct(m.confidence_score ?? m.confidence), 0) / mappedItems.length
+      : 0;
     const avgCol = hexToRgb(pdfConfColor(avgConf));
 
     doc.setFillColor(15, 23, 42);
@@ -1974,10 +1993,12 @@ function exportPDF(data) {
       doc.text(fromLabel, mx + 4 + doc.getTextWidth(table === "_default" ? "Mappings" : table) + 6, y + 6);
     }
 
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(8);
-    doc.setTextColor(...avgCol);
-    doc.text(`${avgConf.toFixed(0)}%`, W - mx - 4, y + 6, { align: "right" });
+    if (mappedItems.length) {
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(...avgCol);
+      doc.text(`${avgConf.toFixed(0)}%`, W - mx - 4, y + 6, { align: "right" });
+    }
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
@@ -1987,6 +2008,9 @@ function exportPDF(data) {
     y += 11;
 
     const tableBody = items.map((m) => {
+      if (m._unmapped) {
+        return ["—", "→", m._col || m.target_column || "", "—", "—", "—", "Unmapped"];
+      }
       const src = (m.source_columns || []).join(", ") || "—";
       const pct = confPct(m.confidence_score ?? m.confidence);
       const mt = m.match_type || "semantic";
@@ -2037,6 +2061,9 @@ function exportPDF(data) {
           if (status === "Validated") {
             hookData.cell.styles.textColor = [22, 163, 74];
             hookData.cell.styles.fontStyle = "bold";
+          } else if (status === "Unmapped") {
+            hookData.cell.styles.textColor = [249, 115, 22];
+            hookData.cell.styles.fontStyle = "bold";
           } else {
             hookData.cell.styles.textColor = [161, 98, 7];
           }
@@ -2078,8 +2105,9 @@ function exportPDF(data) {
 }
 
 function exportCSV(data) {
-  const rows = [["source_columns", "target_column", "match_type", "confidence", "transformation_rule", "reasoning"]];
+  const rows = [["source_columns", "target_column", "match_type", "confidence", "transformation_rule", "reasoning", "status"]];
   for (const m of data.mappings || []) {
+    const status = validatedRows.has(data.mappings.indexOf(m)) ? "Validated" : "Pending";
     rows.push([
       (m.source_columns || []).join("; "),
       m.target_column || "",
@@ -2087,14 +2115,32 @@ function exportCSV(data) {
       String(confPct(m.confidence_score ?? m.confidence).toFixed(0)),
       m.transformation_rule ?? m.transformation ?? "",
       m.reasoning || "",
+      status,
     ]);
+  }
+  for (const col of data.unmapped_target_columns || []) {
+    rows.push(["", col, "", "", "", "", "Unmapped"]);
   }
   const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   downloadFile(csv, "schema_mapping.csv", "text/csv");
 }
 
 function exportJSON(data) {
-  downloadFile(JSON.stringify(data, null, 2), "schema_mapping.json", "application/json");
+  const exported = { ...data };
+  if (exported.mappings) {
+    exported.mappings = exported.mappings.map((m, i) => ({
+      ...m,
+      status: validatedRows.has(i) ? "Validated" : "Pending",
+    }));
+  }
+  if (exported.unmapped_target_columns?.length) {
+    exported.unmapped_entries = exported.unmapped_target_columns.map((col) => ({
+      source_columns: [],
+      target_column: col,
+      status: "Unmapped",
+    }));
+  }
+  downloadFile(JSON.stringify(exported, null, 2), "schema_mapping.json", "application/json");
 }
 
 function exportSQL(data) {

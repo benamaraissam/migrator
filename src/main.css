@@ -1009,6 +1009,55 @@ body {
   color: var(--accent);
 }
 
+/* Unmapped filter toggle */
+.unmapped-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.unmapped-filter-btn:hover {
+  background: var(--surface2);
+  color: var(--text2);
+  border-color: var(--border2);
+}
+
+.unmapped-filter-btn.active {
+  background: rgba(249, 115, 22, 0.1);
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.4);
+}
+
+.unmapped-filter-badge {
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
+  border-radius: 8px;
+  padding: 0 4px;
+}
+
+.unmapped-filter-badge:empty {
+  display: none;
+}
+
 /* Export dropdown */
 .export-dropdown {
   position: relative;
@@ -1409,6 +1458,12 @@ body {
   border: 1px solid rgba(234, 179, 8, 0.25);
 }
 
+.status-unmapped {
+  background: rgba(249, 115, 22, 0.1);
+  color: #f97316;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+}
+
 /* Validated row highlight */
 .mapping-table tr.validated-row > td {
   background: rgba(34, 197, 94, 0.04);
@@ -1416,6 +1471,45 @@ body {
 
 .mapping-table tr.validated-row:hover > td {
   background: rgba(34, 197, 94, 0.07);
+}
+
+/* Unmapped row styling */
+.mapping-table tr.unmapped-row > td {
+  background: rgba(249, 115, 22, 0.03);
+  color: var(--muted);
+}
+
+.mapping-table tr.unmapped-row:hover > td {
+  background: rgba(249, 115, 22, 0.06);
+}
+
+.unmapped-dash {
+  color: var(--border2);
+  font-size: 0.85rem;
+}
+
+.group-unmapped-note {
+  color: #f97316;
+  font-weight: 500;
+  font-size: 0.7rem;
+}
+
+/* Map button for unmapped rows */
+.action-btn.map-btn {
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.action-btn.map-btn:hover {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: rgba(249, 115, 22, 0.5);
+  color: #fb923c;
+}
+
+/* Filter: unmapped-only mode */
+.mapping-body.unmapped-only .mapped-row,
+.mapping-body.unmapped-only .reason-row:not(.unmapped-row) {
+  display: none;
 }
 
 .mapping-table tr.validated-row > td:first-child {
