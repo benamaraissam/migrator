@@ -1,6 +1,6 @@
 import { parseFilesWithContent, parseDelimited, detectDelimiter } from "./parse-file.js";
 import { jsPDF } from "jspdf";
-import "jspdf-autotable";
+import autoTable from "jspdf-autotable";
 import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "prismjs/components/prism-csv";
@@ -34,13 +34,20 @@ const chatMessages = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const chatSend = document.getElementById("chat-send");
 const rulesFileInput = document.getElementById("rules-file");
-const rulesAddBtn = document.getElementById("rules-add");
+const rulesAddDropdown = document.getElementById("rules-add-dropdown");
+const rulesAddTrigger = document.getElementById("rules-add-trigger");
+const rulesAddMenu = document.getElementById("rules-add-menu");
 const rulesToggle = document.getElementById("rules-toggle");
 const rulesSection = document.getElementById("rules-section");
 const rulesList = document.getElementById("rules-list");
 const rulesEmpty = document.getElementById("rules-empty");
 const rulesCount = document.getElementById("rules-count");
 const rulesPreview = document.getElementById("rules-preview");
+
+const chatStop = document.getElementById("chat-stop");
+const sessionSaveBtn = document.getElementById("session-save");
+const sessionLoadBtn = document.getElementById("session-load");
+const sessionClearBtn = document.getElementById("session-clear");
 
 /* ── State ── */
 let sourceFiles = [];
@@ -52,6 +59,8 @@ let chatHistory = [];
 let rulesFiles = [];
 let activeRule = null;
 const fileSeparators = {};
+let currentAbortController = null;
+let isGenerating = false;
 
 const DELIMITERS = [
   { value: ",",  label: "Comma (,)" },
@@ -590,13 +599,31 @@ loadExampleBtn.addEventListener("click", () => {
 
 /* ── Rules files ── */
 rulesToggle.addEventListener("click", (e) => {
-  if (e.target.closest(".rules-add-btn")) return;
+  if (e.target.closest(".rules-add-dropdown")) return;
   rulesSection.classList.toggle("collapsed");
 });
 
-rulesAddBtn.addEventListener("click", (e) => {
+rulesAddTrigger.addEventListener("click", (e) => {
   e.stopPropagation();
+  rulesAddMenu.classList.toggle("hidden");
+});
+
+document.addEventListener("click", (e) => {
+  if (!rulesAddDropdown.contains(e.target)) rulesAddMenu.classList.add("hidden");
+});
+
+rulesAddDropdown.addEventListener("click", (e) => e.stopPropagation());
+
+document.getElementById("rules-add-file").addEventListener("click", (e) => {
+  e.stopPropagation();
+  rulesAddMenu.classList.add("hidden");
   rulesFileInput.click();
+});
+
+document.getElementById("rules-add-write").addEventListener("click", (e) => {
+  e.stopPropagation();
+  rulesAddMenu.classList.add("hidden");
+  openRuleEditor();
 });
 
 rulesFileInput.addEventListener("change", async (e) => {
@@ -610,6 +637,86 @@ rulesFileInput.addEventListener("change", async (e) => {
   renderRules();
 });
 
+function openRuleEditor(existingRule) {
+  const isEdit = !!existingRule;
+  const overlay = document.createElement("div");
+  overlay.className = "rule-editor-overlay";
+  overlay.id = "rule-editor-overlay";
+  overlay.innerHTML = `
+    <div class="rule-editor-panel">
+      <div class="rule-editor-header">
+        <span class="rule-editor-title">${isEdit ? "Edit Rule" : "Add Rule"}</span>
+        <button type="button" class="stream-overlay-close" id="rule-editor-close" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="rule-editor-body">
+        <div class="rule-editor-field">
+          <label class="rule-editor-label" for="rule-editor-name">Name</label>
+          <input type="text" class="rule-editor-input" id="rule-editor-name" placeholder="e.g. id-mapping-rules" value="${isEdit ? esc(existingRule.fileName.replace(/\.[^.]+$/, "")) : ""}" />
+        </div>
+        <div class="rule-editor-field rule-editor-field-grow">
+          <label class="rule-editor-label" for="rule-editor-content">Rule content</label>
+          <textarea class="rule-editor-textarea" id="rule-editor-content" placeholder="Paste or type your mapping rules here...">${isEdit ? esc(existingRule.content) : ""}</textarea>
+        </div>
+      </div>
+      <div class="rule-editor-footer">
+        <button type="button" class="btn-sm btn-ghost" id="rule-editor-cancel">Cancel</button>
+        <button type="button" class="btn-sm" id="rule-editor-save">${isEdit ? "Save" : "Add Rule"}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const nameInput = overlay.querySelector("#rule-editor-name");
+  const contentArea = overlay.querySelector("#rule-editor-content");
+  const saveBtn = overlay.querySelector("#rule-editor-save");
+  const cancelBtn = overlay.querySelector("#rule-editor-cancel");
+  const closeBtn = overlay.querySelector("#rule-editor-close");
+
+  nameInput.focus();
+
+  function close() {
+    overlay.remove();
+  }
+
+  function save() {
+    const name = (nameInput.value || "").trim();
+    const content = (contentArea.value || "").trim();
+    if (!content) {
+      contentArea.classList.add("rule-editor-error");
+      setTimeout(() => contentArea.classList.remove("rule-editor-error"), 1000);
+      return;
+    }
+    const fileName = (name || `rule-${Date.now()}`) + ".txt";
+
+    if (isEdit) {
+      const idx = rulesFiles.findIndex((r) => r.fileName === existingRule.fileName);
+      if (idx >= 0) {
+        rulesFiles[idx] = { fileName, content };
+        if (activeRule === existingRule.fileName) activeRule = fileName;
+      }
+    } else {
+      rulesFiles.push({ fileName, content });
+    }
+    renderRules();
+    close();
+  }
+
+  saveBtn.addEventListener("click", save);
+  cancelBtn.addEventListener("click", close);
+  closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  contentArea.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      save();
+    }
+  });
+}
+
 function renderRules() {
   rulesEmpty.style.display = rulesFiles.length ? "none" : "block";
   rulesCount.textContent = rulesFiles.length ? `(${rulesFiles.length})` : "";
@@ -621,8 +728,15 @@ function renderRules() {
     item.innerHTML = `
       <svg class="rule-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
       <span class="rule-name">${esc(r.fileName)}</span>
+      <button type="button" class="rule-edit" title="Edit">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
       <button type="button" class="rule-remove" title="Remove">&times;</button>
     `;
+    item.querySelector(".rule-edit").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRuleEditor(r);
+    });
     item.querySelector(".rule-remove").addEventListener("click", (e) => {
       e.stopPropagation();
       rulesFiles = rulesFiles.filter((f) => f.fileName !== r.fileName);
@@ -630,7 +744,7 @@ function renderRules() {
       renderRules();
     });
     item.addEventListener("click", (e) => {
-      if (e.target.closest(".rule-remove")) return;
+      if (e.target.closest(".rule-remove") || e.target.closest(".rule-edit")) return;
       if (activeRule === r.fileName) {
         activeRule = null;
         rulesPreview.classList.remove("visible");
@@ -782,7 +896,7 @@ chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); }
 });
 
-async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstruction, rules) {
+async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstruction, rules, signal) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
       source_files: sourceFiles,
@@ -795,6 +909,7 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
+      signal,
     }).then((res) => {
       if (!res.ok) {
         return res.json().then((d) => resolve({ error: d.error || "Request failed" }));
@@ -848,12 +963,34 @@ async function fetchMappingWithProgress(sourceFiles, targetFiles, userInstructio
   });
 }
 
+function setGenerating(on) {
+  isGenerating = on;
+  chatSend.classList.toggle("hidden", on);
+  chatStop.classList.toggle("hidden", !on);
+  chatSend.disabled = on;
+}
+
+function stopGeneration() {
+  if (currentAbortController) {
+    currentAbortController.abort();
+    currentAbortController = null;
+  }
+  setGenerating(false);
+  removeThinking();
+  chatHistory.push({ role: "assistant", content: "Generation stopped by user." });
+  renderChat();
+}
+
+chatStop.addEventListener("click", stopGeneration);
+
 async function sendChatMessage() {
   const text = (chatInput.value || "").trim();
   if (!text) return;
 
   chatInput.value = "";
-  chatSend.disabled = true;
+  setGenerating(true);
+  currentAbortController = new AbortController();
+  const signal = currentAbortController.signal;
   chatHistory.push({ role: "user", content: text });
   renderChat();
 
@@ -865,14 +1002,15 @@ async function sendChatMessage() {
   if (isFirstMessage) {
     if (!sourceFiles.length || !targetFiles.length) {
       showError("Add at least one file to Source and Target first.");
-      chatHistory.pop(); renderChat(); chatSend.disabled = false;
+      chatHistory.pop(); renderChat(); setGenerating(false);
       return;
     }
 
     try {
       addThinking();
-      const data = await fetchMappingWithProgress(rawSourceFiles, rawTargetFiles, text, getRulesText());
+      const data = await fetchMappingWithProgress(rawSourceFiles, rawTargetFiles, text, getRulesText(), signal);
       removeThinking();
+      if (signal.aborted) return;
       if (data.error) { showError(data.error); chatHistory.pop(); renderChat(); return; }
       currentMapping = data;
       chatHistory.push({ role: "assistant", content: data.analysis_summary || "Mapping generated. See results below." });
@@ -880,9 +1018,10 @@ async function sendChatMessage() {
       renderChat();
     } catch (err) {
       removeThinking();
+      if (signal.aborted) return;
       showError(err.message || "Network error");
       chatHistory.pop(); renderChat();
-    } finally { chatSend.disabled = false; }
+    } finally { setGenerating(false); currentAbortController = null; }
   } else {
     try {
       addThinking();
@@ -897,9 +1036,11 @@ async function sendChatMessage() {
           user_message: text,
           rules: getRulesText(),
         }),
+        signal,
       });
       const data = await res.json();
       removeThinking();
+      if (signal.aborted) return;
       if (!res.ok) { showError(data.error || "Request failed"); chatHistory.pop(); renderChat(); return; }
       currentMapping = data.mapping;
       chatHistory.push({ role: "assistant", content: data.message || "Mapping updated." });
@@ -907,9 +1048,10 @@ async function sendChatMessage() {
       renderChat();
     } catch (err) {
       removeThinking();
+      if (signal.aborted) return;
       showError(err.message || "Network error");
       chatHistory.pop(); renderChat();
-    } finally { chatSend.disabled = false; }
+    } finally { setGenerating(false); currentAbortController = null; }
   }
 }
 
@@ -929,7 +1071,11 @@ function addThinking() {
   el.className = "chat-message assistant";
   el.id = "thinking-indicator";
   el.innerHTML = `
-    <div class="role">AI</div>
+    <div class="role">AI
+      <button type="button" class="stream-expand-btn" id="stream-expand-btn" title="Expand stream view">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+    </div>
     <div class="thinking-body">
       <div class="stream-log" id="stream-log"></div>
       <div class="stream-tokens" id="stream-tokens"></div>
@@ -937,36 +1083,96 @@ function addThinking() {
     </div>`;
   chatMessages.appendChild(el);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  el.querySelector("#stream-expand-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    openStreamOverlay();
+  });
+}
+
+let streamOverlayOpen = false;
+
+function openStreamOverlay() {
+  if (streamOverlayOpen) return;
+  streamOverlayOpen = true;
+
+  const overlay = document.createElement("div");
+  overlay.className = "stream-overlay";
+  overlay.id = "stream-overlay";
+  overlay.innerHTML = `
+    <div class="stream-overlay-panel">
+      <div class="stream-overlay-header">
+        <span class="stream-overlay-title">AI Stream</span>
+        <div class="thinking-dots"><div class="dots"><span></span><span></span><span></span></div></div>
+        <button type="button" class="stream-overlay-close" id="stream-overlay-close" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="stream-overlay-body">
+        <div class="stream-log" id="stream-log-overlay"></div>
+        <div class="stream-tokens" id="stream-tokens-overlay"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  /* Copy current content into overlay */
+  const srcLog = document.getElementById("stream-log");
+  const dstLog = document.getElementById("stream-log-overlay");
+  if (srcLog && dstLog) dstLog.innerHTML = srcLog.innerHTML;
+
+  const srcTokens = document.getElementById("stream-tokens");
+  const dstTokens = document.getElementById("stream-tokens-overlay");
+  if (srcTokens && dstTokens) dstTokens.textContent = srcTokens.textContent;
+
+  overlay.querySelector("#stream-overlay-close").addEventListener("click", closeStreamOverlay);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeStreamOverlay();
+  });
+}
+
+function closeStreamOverlay() {
+  streamOverlayOpen = false;
+  document.getElementById("stream-overlay")?.remove();
 }
 
 function appendStreamLine(text) {
   streamLines.push(text);
-  const log = document.getElementById("stream-log");
-  if (log) {
-    const line = document.createElement("div");
-    line.className = "stream-line";
-    line.textContent = text;
-    log.appendChild(line);
+  const targets = ["stream-log", "stream-log-overlay"];
+  for (const id of targets) {
+    const log = document.getElementById(id);
+    if (log) {
+      const line = document.createElement("div");
+      line.className = "stream-line";
+      line.textContent = text;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
   }
   streamTokens = "";
-  const tokenEl = document.getElementById("stream-tokens");
-  if (tokenEl) tokenEl.textContent = "";
+  for (const id of ["stream-tokens", "stream-tokens-overlay"]) {
+    const tokenEl = document.getElementById(id);
+    if (tokenEl) tokenEl.textContent = "";
+  }
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function flushStreamTokens() {
   streamTokenFlushScheduled = false;
   streamTokenLastFlush = Date.now();
-  const tokenEl = document.getElementById("stream-tokens");
-  if (!tokenEl) return;
   let display = streamTokens;
   let truncated = false;
   if (display.length > STREAM_MAX_DISPLAY_CHARS) {
     display = "... " + display.slice(-STREAM_MAX_DISPLAY_CHARS);
     truncated = true;
   }
-  tokenEl.textContent = display;
-  if (truncated) tokenEl.dataset.truncated = "1";
+  for (const id of ["stream-tokens", "stream-tokens-overlay"]) {
+    const tokenEl = document.getElementById(id);
+    if (!tokenEl) continue;
+    tokenEl.textContent = display;
+    if (truncated) tokenEl.dataset.truncated = "1";
+    tokenEl.scrollTop = tokenEl.scrollHeight;
+  }
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
@@ -991,6 +1197,8 @@ function removeThinking() {
   // Remove just the dots
   const dots = document.querySelector("#thinking-indicator .thinking-dots");
   if (dots) dots.remove();
+  // Close the overlay if open
+  closeStreamOverlay();
   // Persist the stream lines into chatHistory so they survive re-renders
   if (streamLines.length > 0) {
     chatHistory.push({ role: "assistant", content: streamLines.join("\n"), isStreamLog: true });
@@ -1018,17 +1226,309 @@ function renderChat() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+/* ── Session management (clear / save / load) ── */
+
+function clearSession() {
+  if (isGenerating) stopGeneration();
+  sourceFiles = [];
+  targetFiles = [];
+  activeSource = null;
+  activeTarget = null;
+  currentMapping = null;
+  chatHistory = [];
+  validatedRows.clear();
+  originalMappings.clear();
+  renderTree(sourceTree, sourceEmpty, sourceFiles, null, "source");
+  renderTree(targetTree, targetEmpty, targetFiles, null, "target");
+  sourceContent.innerHTML = '<div class="placeholder-text">Select a file to preview</div>';
+  targetContent.innerHTML = '<div class="placeholder-text">Select a file to preview</div>';
+  resultContent.classList.add("hidden");
+  resultEmpty.classList.remove("hidden");
+  mappingGroups.innerHTML = "";
+  unmappedContainer.innerHTML = "";
+  unmappedContainer.classList.add("hidden");
+  analysisSummary.textContent = "";
+  globalConfBadge.textContent = "";
+  renderChat();
+}
+
+function getSessionSnapshot() {
+  return {
+    sourceFiles: sourceFiles.map((f) => ({ fileName: f.fileName, rawContent: f.rawContent })),
+    targetFiles: targetFiles.map((f) => ({ fileName: f.fileName, rawContent: f.rawContent })),
+    currentMapping,
+    chatHistory,
+    rulesFiles: rulesFiles.map((r) => ({ name: r.name, content: r.content })),
+    validatedRows: [...validatedRows],
+    originalMappings: Object.fromEntries(originalMappings),
+    savedAt: new Date().toISOString(),
+  };
+}
+
+function getSavedSessions() {
+  try {
+    return JSON.parse(localStorage.getItem("migrator_sessions") || "[]");
+  } catch { return []; }
+}
+
+function saveSession() {
+  const name = prompt("Session name:", `Session ${new Date().toLocaleString()}`);
+  if (!name) return;
+  const sessions = getSavedSessions();
+  sessions.unshift({ id: Date.now().toString(), name, data: getSessionSnapshot() });
+  if (sessions.length > 20) sessions.length = 20;
+  try {
+    localStorage.setItem("migrator_sessions", JSON.stringify(sessions));
+    showSessionToast("Session saved");
+  } catch (e) {
+    showError("Failed to save session — storage may be full.");
+  }
+}
+
+function loadSession(sessionData) {
+  clearSession();
+  const d = sessionData;
+  if (d.sourceFiles?.length) {
+    for (const f of d.sourceFiles) addParsedFile("source", f.fileName, f.rawContent);
+  }
+  if (d.targetFiles?.length) {
+    for (const f of d.targetFiles) addParsedFile("target", f.fileName, f.rawContent);
+  }
+  if (d.rulesFiles?.length) {
+    rulesFiles = d.rulesFiles.map((r) => ({ name: r.name, content: r.content }));
+    renderRules();
+  }
+  chatHistory = d.chatHistory || [];
+  renderChat();
+  if (d.currentMapping) {
+    currentMapping = d.currentMapping;
+    if (d.validatedRows) for (const i of d.validatedRows) validatedRows.add(i);
+    if (d.originalMappings) {
+      for (const [k, v] of Object.entries(d.originalMappings)) originalMappings.set(Number(k), v);
+    }
+    renderResult(currentMapping);
+  }
+}
+
+function addParsedFile(side, fileName, rawContent) {
+  const existing = side === "source" ? sourceFiles : targetFiles;
+  existing.push({ fileName, rawContent });
+  if (side === "source") {
+    renderTree(sourceTree, sourceEmpty, sourceFiles, activeSource, "source");
+  } else {
+    renderTree(targetTree, targetEmpty, targetFiles, activeTarget, "target");
+  }
+}
+
+function showSessionToast(msg) {
+  const toast = document.createElement("div");
+  toast.className = "session-toast";
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => { toast.classList.add("session-toast-out"); }, 1800);
+  setTimeout(() => toast.remove(), 2200);
+}
+
+function openSessionPicker() {
+  const sessions = getSavedSessions();
+  const overlay = document.createElement("div");
+  overlay.className = "stream-overlay";
+  overlay.id = "session-picker-overlay";
+  const empty = sessions.length === 0
+    ? '<div class="session-picker-empty">No saved sessions yet</div>'
+    : "";
+  const items = sessions.map((s) => {
+    const date = s.data?.savedAt ? new Date(s.data.savedAt).toLocaleString() : "";
+    const fileCount = (s.data?.sourceFiles?.length || 0) + (s.data?.targetFiles?.length || 0);
+    const msgCount = s.data?.chatHistory?.filter((m) => !m.isStreamLog)?.length || 0;
+    return `<div class="session-picker-item" data-id="${s.id}">
+      <div class="session-picker-info">
+        <span class="session-picker-name">${esc(s.name)}</span>
+        <span class="session-picker-meta">${date} · ${fileCount} files · ${msgCount} messages</span>
+      </div>
+      <button type="button" class="session-picker-delete" data-id="${s.id}" title="Delete">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+      </button>
+    </div>`;
+  }).join("");
+  overlay.innerHTML = `
+    <div class="stream-overlay-panel session-picker-panel">
+      <div class="stream-overlay-header">
+        <span class="stream-overlay-title">Load Session</span>
+        <button type="button" class="stream-overlay-close" id="session-picker-close" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="session-picker-body">${empty}${items}</div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector("#session-picker-close").addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+
+  overlay.querySelectorAll(".session-picker-item").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".session-picker-delete")) return;
+      const session = sessions.find((s) => s.id === el.dataset.id);
+      if (session) { loadSession(session.data); overlay.remove(); showSessionToast("Session loaded"); }
+    });
+  });
+
+  overlay.querySelectorAll(".session-picker-delete").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      const updated = getSavedSessions().filter((s) => s.id !== id);
+      localStorage.setItem("migrator_sessions", JSON.stringify(updated));
+      btn.closest(".session-picker-item").remove();
+      if (!updated.length) {
+        overlay.querySelector(".session-picker-body").innerHTML = '<div class="session-picker-empty">No saved sessions yet</div>';
+      }
+    });
+  });
+}
+
+sessionSaveBtn.addEventListener("click", saveSession);
+sessionLoadBtn.addEventListener("click", openSessionPicker);
+sessionClearBtn.addEventListener("click", () => {
+  if (chatHistory.length === 0 && !currentMapping) return;
+  if (!confirm("Clear current session and start fresh?")) return;
+  clearSession();
+  showSessionToast("Session cleared");
+});
+
 /* ── Mapping render (grouped by target table) ── */
+
+/* Track which mapping rows the user has validated */
+const validatedRows = new Set();
+/* Store original mapping snapshot per row index for rollback */
+const originalMappings = new Map();
+
+/* Collect all source columns from loaded source files */
+function getAllSourceColumns() {
+  const cols = [];
+  for (const f of sourceFiles) {
+    const tableName = f.schema?.table_name || f.fileName.replace(/\.[^.]+$/, "");
+    for (const c of f.schema?.columns || []) {
+      cols.push(`${tableName}.${c.name}`);
+    }
+  }
+  return cols;
+}
+
+/* Collect all target columns from loaded target files */
+function getAllTargetColumns() {
+  const cols = [];
+  for (const f of targetFiles) {
+    const tableName = f.schema?.table_name || f.fileName.replace(/\.[^.]+$/, "");
+    for (const c of f.schema?.columns || []) {
+      cols.push(`${tableName}.${c.name}`);
+    }
+  }
+  return cols;
+}
+
+/* Validate a mapping row (snapshot original state for rollback) */
+function validateMapping(mappingIndex) {
+  if (!currentMapping?.mappings?.[mappingIndex]) return;
+  if (!originalMappings.has(mappingIndex)) {
+    originalMappings.set(mappingIndex, JSON.parse(JSON.stringify(currentMapping.mappings[mappingIndex])));
+  }
+  validatedRows.add(mappingIndex);
+  renderResult(currentMapping);
+}
+
+/* Rollback a mapping row to its original AI-generated state */
+function rollbackMapping(mappingIndex) {
+  if (!currentMapping?.mappings?.[mappingIndex]) return;
+  const original = originalMappings.get(mappingIndex);
+  if (original) {
+    currentMapping.mappings[mappingIndex] = { ...original, _col: currentMapping.mappings[mappingIndex]._col };
+    originalMappings.delete(mappingIndex);
+  }
+  validatedRows.delete(mappingIndex);
+  renderResult(currentMapping);
+}
+
+/* Change the source column(s) for a mapping */
+function changeSourceColumn(mappingIndex, newSourceCol) {
+  if (!currentMapping?.mappings?.[mappingIndex]) return;
+  if (!originalMappings.has(mappingIndex)) {
+    originalMappings.set(mappingIndex, JSON.parse(JSON.stringify(currentMapping.mappings[mappingIndex])));
+  }
+  const m = currentMapping.mappings[mappingIndex];
+  m.source_columns = newSourceCol ? [newSourceCol] : [];
+  m.match_type = "manual";
+  m.confidence_score = 100;
+  m.confidence = 100;
+  m.reasoning = (m.reasoning ? m.reasoning + " | " : "") + "Manually reassigned by user";
+  validatedRows.add(mappingIndex);
+  renderResult(currentMapping);
+}
+
+/* Manually map an unmapped column */
+function manuallyMapColumn(side, unmappedCol, pairedCol) {
+  if (!currentMapping) return;
+  const newMapping = {
+    source_columns: side === "source" ? [unmappedCol] : [pairedCol],
+    target_column: side === "source" ? pairedCol : unmappedCol,
+    match_type: "manual",
+    confidence_score: 100,
+    confidence: 100,
+    transformation_rule: "",
+    reasoning: "Manually mapped by user",
+  };
+  currentMapping.mappings.push(newMapping);
+  validatedRows.add(currentMapping.mappings.length - 1);
+
+  if (side === "source") {
+    currentMapping.unmapped_source_columns = (currentMapping.unmapped_source_columns || []).filter((c) => c !== unmappedCol);
+  } else {
+    currentMapping.unmapped_target_columns = (currentMapping.unmapped_target_columns || []).filter((c) => c !== unmappedCol);
+  }
+
+  renderResult(currentMapping);
+}
+
+/* Remove a mapping row and move columns back to unmapped */
+function unmapRow(mappingIndex) {
+  if (!currentMapping?.mappings?.[mappingIndex]) return;
+  const m = currentMapping.mappings[mappingIndex];
+  if (m.source_columns?.length) {
+    currentMapping.unmapped_source_columns = currentMapping.unmapped_source_columns || [];
+    for (const sc of m.source_columns) {
+      if (!currentMapping.unmapped_source_columns.includes(sc)) currentMapping.unmapped_source_columns.push(sc);
+    }
+  }
+  if (m.target_column) {
+    currentMapping.unmapped_target_columns = currentMapping.unmapped_target_columns || [];
+    if (!currentMapping.unmapped_target_columns.includes(m.target_column)) {
+      currentMapping.unmapped_target_columns.push(m.target_column);
+    }
+  }
+  currentMapping.mappings.splice(mappingIndex, 1);
+  validatedRows.delete(mappingIndex);
+  // Re-index validated rows
+  const newValidated = new Set();
+  for (const idx of validatedRows) {
+    if (idx > mappingIndex) newValidated.add(idx - 1);
+    else newValidated.add(idx);
+  }
+  validatedRows.clear();
+  for (const idx of newValidated) validatedRows.add(idx);
+  renderResult(currentMapping);
+}
 
 function groupMappings(mappings) {
   const groups = new Map();
-  for (const m of mappings) {
+  for (let i = 0; i < mappings.length; i++) {
+    const m = mappings[i];
     const tgt = m.target_column || "";
     const dotIdx = tgt.indexOf(".");
     const table = dotIdx > 0 ? tgt.substring(0, dotIdx) : "_default";
     const col = dotIdx > 0 ? tgt.substring(dotIdx + 1) : tgt;
     if (!groups.has(table)) groups.set(table, []);
-    groups.get(table).push({ ...m, _col: col });
+    groups.get(table).push({ ...m, _col: col, _globalIdx: i });
   }
   return groups;
 }
@@ -1055,6 +1555,7 @@ function renderResult(data) {
 
   const mappings = data.mappings || [];
   const groups = groupMappings(mappings);
+  const allSourceCols = getAllSourceColumns();
 
   let html = "";
   for (const [table, items] of groups) {
@@ -1080,20 +1581,28 @@ function renderResult(data) {
         <div class="mapping-group-body">
           <table class="mapping-table">
             <thead><tr>
-              <th>Source</th><th></th><th>Target</th><th>Type</th><th>Confidence</th><th>Transformation</th>
+              <th>Source</th><th></th><th>Target</th><th>Type</th><th>Confidence</th><th>Transformation</th><th>Status</th><th>Actions</th>
             </tr></thead>
             <tbody>
     `;
 
     for (const m of items) {
+      const globalIdx = m._globalIdx;
       const src = (m.source_columns || []).join(", ") || "—";
       const pct = confPct(m.confidence_score ?? m.confidence);
       const color = confColor(m.confidence_score ?? m.confidence);
       const mt = m.match_type || "semantic";
       const transform = m.transformation_rule ?? m.transformation ?? "";
+      const isValidated = validatedRows.has(globalIdx);
+      const wasEdited = originalMappings.has(globalIdx);
+      const rowClass = isValidated ? " validated-row" : "";
+
+      const statusHtml = isValidated
+        ? `<span class="status-badge status-validated"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Validated</span>`
+        : `<span class="status-badge status-pending">Pending</span>`;
 
       html += `
-        <tr>
+        <tr class="${rowClass}" data-mapping-idx="${globalIdx}">
           <td class="col-source">${esc(src)}</td>
           <td class="col-arrow">→</td>
           <td class="col-target">${esc(m._col || m.target_column)}</td>
@@ -1105,8 +1614,27 @@ function renderResult(data) {
             </div>
           </td>
           <td class="col-transform">${transform ? esc(transform) : '<span class="no-transform">direct</span>'}</td>
+          <td class="col-status">${statusHtml}</td>
+          <td class="col-actions">
+            <div class="mapping-actions">
+              ${!isValidated ? `
+              <button type="button" class="action-btn validate-btn" data-idx="${globalIdx}" title="Validate mapping">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>` : ""}
+              <button type="button" class="action-btn change-btn" data-idx="${globalIdx}" title="Change source column">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              ${isValidated || wasEdited ? `
+              <button type="button" class="action-btn rollback-btn" data-idx="${globalIdx}" title="Rollback to original">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
+              </button>` : ""}
+              <button type="button" class="action-btn unmap-btn" data-idx="${globalIdx}" title="Remove mapping">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </td>
         </tr>
-        ${m.reasoning ? `<tr class="reason-row"><td colspan="6">${esc(m.reasoning)}</td></tr>` : ""}
+        ${m.reasoning ? `<tr class="reason-row${rowClass}"><td colspan="8">${esc(m.reasoning)}</td></tr>` : ""}
       `;
     }
 
@@ -1115,23 +1643,208 @@ function renderResult(data) {
 
   mappingGroups.innerHTML = html;
 
-  const hasUnmapped =
-    (data.unmapped_source_columns?.length || 0) > 0 ||
-    (data.unmapped_target_columns?.length || 0) > 0;
+  /* Attach action button listeners */
+  mappingGroups.querySelectorAll(".validate-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      validateMapping(Number(btn.dataset.idx));
+    });
+  });
+
+  mappingGroups.querySelectorAll(".change-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      showSourcePicker(btn, Number(btn.dataset.idx), allSourceCols);
+    });
+  });
+
+  mappingGroups.querySelectorAll(".rollback-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      rollbackMapping(Number(btn.dataset.idx));
+    });
+  });
+
+  mappingGroups.querySelectorAll(".unmap-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      unmapRow(Number(btn.dataset.idx));
+    });
+  });
+
+  /* ── Unmapped section ── */
+  const allTargetCols = getAllTargetColumns();
+  const mappedSourceCols = new Set();
+  const mappedTargetCols = new Set();
+  for (const m of mappings) {
+    for (const sc of m.source_columns || []) mappedSourceCols.add(sc);
+    if (m.target_column) mappedTargetCols.add(m.target_column);
+  }
+
+  const hasUnmapped = (data.unmapped_target_columns?.length || 0) > 0;
 
   if (hasUnmapped) {
     unmappedContainer.classList.remove("hidden");
     let uhtml = "";
-    if (data.unmapped_source_columns?.length) {
-      uhtml += `<h4>Unmapped Source</h4><ul>${data.unmapped_source_columns.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
+
+    /* Helper: group column names by table (split on first dot) */
+    function groupByTable(columns) {
+      const groups = new Map();
+      for (const col of columns) {
+        const dotIdx = col.indexOf(".");
+        const table = dotIdx > 0 ? col.substring(0, dotIdx) : "_ungrouped";
+        if (!groups.has(table)) groups.set(table, []);
+        groups.get(table).push(col);
+      }
+      return groups;
     }
-    if (data.unmapped_target_columns?.length) {
-      uhtml += `<h4>Unmapped Target</h4><ul>${data.unmapped_target_columns.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`;
+
+    /* Helper: extract column name after table prefix */
+    function colShortName(col) {
+      const dotIdx = col.indexOf(".");
+      return dotIdx > 0 ? col.substring(dotIdx + 1) : col;
     }
+
+    const unmappedTargetGroups = groupByTable(data.unmapped_target_columns);
+    const totalUnmapped = data.unmapped_target_columns.length;
+    uhtml += `<h4>Unmapped Target Columns <span class="unmapped-total">${totalUnmapped}</span></h4>`;
+
+    for (const [table, cols] of unmappedTargetGroups) {
+      uhtml += `
+        <div class="unmapped-group">
+          <div class="unmapped-group-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            <span class="unmapped-group-label">${esc(table === "_ungrouped" ? "Other" : table)}</span>
+            <span class="unmapped-group-count">${cols.length} column${cols.length !== 1 ? "s" : ""}</span>
+          </div>
+          <div class="unmapped-group-body">`;
+
+      for (const col of cols) {
+        uhtml += `
+            <div class="unmapped-item" data-side="target" data-col="${esc(col)}">
+              <button type="button" class="unmapped-picker-trigger" data-side="target" data-col="${esc(col)}" title="Choose source column">
+                <span class="unmapped-picker-label">Select source column...</span>
+                <svg class="unmapped-picker-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <svg class="unmapped-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14m-7-7 7 7-7 7"/></svg>
+              <span class="unmapped-col-name target">${esc(colShortName(col))}</span>
+            </div>`;
+      }
+
+      uhtml += `</div></div>`;
+    }
+
     unmappedContainer.innerHTML = uhtml;
+
+    /* Attach unmapped picker: same custom dropdown as mapped columns */
+    const availableSourcesForUnmapped = allSourceCols.filter((sc) => !mappedSourceCols.has(sc));
+    unmappedContainer.querySelectorAll(".unmapped-picker-trigger").forEach((btn) => {
+      const targetCol = btn.dataset.col;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showUnmappedSourcePicker(btn, targetCol, availableSourcesForUnmapped);
+      });
+    });
   } else {
     unmappedContainer.classList.add("hidden");
   }
+}
+
+/* Show a floating picker to choose a different source column */
+function showSourcePicker(anchorBtn, mappingIndex, allSourceCols) {
+  document.querySelectorAll(".source-picker-popup").forEach((el) => el.remove());
+
+  const currentSources = currentMapping?.mappings?.[mappingIndex]?.source_columns || [];
+  const popup = document.createElement("div");
+  popup.className = "source-picker-popup";
+
+  let listHtml = `<div class="picker-header">Choose source column</div><div class="picker-list">`;
+  for (const col of allSourceCols) {
+    const isCurrent = currentSources.includes(col);
+    listHtml += `<button type="button" class="picker-option${isCurrent ? " current" : ""}" data-col="${esc(col)}">${esc(col)}</button>`;
+  }
+  listHtml += `</div>`;
+  popup.innerHTML = listHtml;
+
+  const rect = anchorBtn.getBoundingClientRect();
+  popup.style.position = "fixed";
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.left = `${rect.left}px`;
+  popup.style.zIndex = "100";
+
+  document.body.appendChild(popup);
+
+  /* Reposition if off-screen */
+  const popRect = popup.getBoundingClientRect();
+  if (popRect.right > window.innerWidth - 8) {
+    popup.style.left = `${window.innerWidth - popRect.width - 8}px`;
+  }
+  if (popRect.bottom > window.innerHeight - 8) {
+    popup.style.top = `${rect.top - popRect.height - 4}px`;
+  }
+
+  popup.querySelectorAll(".picker-option").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      changeSourceColumn(mappingIndex, opt.dataset.col);
+      popup.remove();
+    });
+  });
+
+  const closePopup = (e) => {
+    if (!popup.contains(e.target) && e.target !== anchorBtn) {
+      popup.remove();
+      document.removeEventListener("click", closePopup);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closePopup), 0);
+}
+
+/* Same-style picker for unmapped target column: choose source to map from */
+function showUnmappedSourcePicker(anchorEl, targetCol, availableSources) {
+  document.querySelectorAll(".source-picker-popup").forEach((el) => el.remove());
+
+  if (!availableSources.length) return;
+
+  const popup = document.createElement("div");
+  popup.className = "source-picker-popup";
+
+  let listHtml = `<div class="picker-header">Choose source column</div><div class="picker-list">`;
+  for (const col of availableSources) {
+    listHtml += `<button type="button" class="picker-option" data-col="${esc(col)}">${esc(col)}</button>`;
+  }
+  listHtml += `</div>`;
+  popup.innerHTML = listHtml;
+
+  const rect = anchorEl.getBoundingClientRect();
+  popup.style.position = "fixed";
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.left = `${rect.left}px`;
+  popup.style.zIndex = "100";
+
+  document.body.appendChild(popup);
+
+  const popRect = popup.getBoundingClientRect();
+  if (popRect.right > window.innerWidth - 8) {
+    popup.style.left = `${window.innerWidth - popRect.width - 8}px`;
+  }
+  if (popRect.bottom > window.innerHeight - 8) {
+    popup.style.top = `${rect.top - popRect.height - 4}px`;
+  }
+
+  popup.querySelectorAll(".picker-option").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      manuallyMapColumn("target", targetCol, opt.dataset.col);
+      popup.remove();
+    });
+  });
+
+  const closePopup = (e) => {
+    if (!popup.contains(e.target) && e.target !== anchorEl) {
+      popup.remove();
+      document.removeEventListener("click", closePopup);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", closePopup), 0);
 }
 
 function showResultEmpty() {
@@ -1278,12 +1991,13 @@ function exportPDF(data) {
       const pct = confPct(m.confidence_score ?? m.confidence);
       const mt = m.match_type || "semantic";
       const transform = m.transformation_rule ?? m.transformation ?? "";
-      return [src, "→", m._col || m.target_column || "", mt, `${pct.toFixed(0)}%`, transform || "direct"];
+      const status = validatedRows.has(m._globalIdx) ? "Validated" : "Pending";
+      return [src, "→", m._col || m.target_column || "", mt, `${pct.toFixed(0)}%`, transform || "direct", status];
     });
 
-    doc.autoTable({
+    autoTable(doc, {
       startY: y,
-      head: [["Source", "", "Target", "Type", "Conf.", "Transformation"]],
+      head: [["Source", "", "Target", "Type", "Conf.", "Transformation", "Status"]],
       body: tableBody,
       margin: { left: mx, right: mx },
       theme: "grid",
@@ -1296,12 +2010,13 @@ function exportPDF(data) {
       },
       bodyStyles: { fontSize: 7, cellPadding: 2.5, textColor: [30, 41, 59] },
       columnStyles: {
-        0: { font: "courier", textColor: [22, 163, 74], fontStyle: "bold", cellWidth: 50 },
+        0: { font: "courier", textColor: [22, 163, 74], fontStyle: "bold", cellWidth: 45 },
         1: { halign: "center", cellWidth: 8, textColor: [148, 163, 184] },
-        2: { font: "courier", textColor: [37, 99, 246], fontStyle: "bold", cellWidth: 40 },
-        3: { cellWidth: 22, fontSize: 6.5 },
-        4: { cellWidth: 16, halign: "center", fontStyle: "bold" },
+        2: { font: "courier", textColor: [37, 99, 246], fontStyle: "bold", cellWidth: 35 },
+        3: { cellWidth: 20, fontSize: 6.5 },
+        4: { cellWidth: 14, halign: "center", fontStyle: "bold" },
         5: { font: "courier", fontSize: 6, textColor: [161, 98, 7], cellWidth: "auto" },
+        6: { cellWidth: 20, halign: "center", fontSize: 6.5 },
       },
       didParseCell: (hookData) => {
         if (hookData.section === "body" && hookData.column.index === 3) {
@@ -1317,11 +2032,20 @@ function exportPDF(data) {
           hookData.cell.styles.fontStyle = "italic";
           hookData.cell.styles.font = "helvetica";
         }
+        if (hookData.section === "body" && hookData.column.index === 6) {
+          const status = hookData.cell.raw;
+          if (status === "Validated") {
+            hookData.cell.styles.textColor = [22, 163, 74];
+            hookData.cell.styles.fontStyle = "bold";
+          } else {
+            hookData.cell.styles.textColor = [161, 98, 7];
+          }
+        }
       },
       alternateRowStyles: { fillColor: [249, 250, 251] },
     });
 
-    y = doc.lastAutoTable.finalY + 8;
+    y = (doc.lastAutoTable?.finalY ?? y) + 8;
   }
 
   if ((data.unmapped_source_columns?.length || 0) > 0 || (data.unmapped_target_columns?.length || 0) > 0) {
