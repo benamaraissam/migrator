@@ -1,0 +1,418 @@
+<div class="app">
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-icon">⬡</span>
+      <span class="brand-text">Migrator</span>
+      <div class="session-controls">
+        <button type="button" class="session-btn" title="Save session" (click)="saveSession()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        </button>
+        <button type="button" class="session-btn" title="Load session" (click)="openSessionPicker()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 002-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+        </button>
+        <button type="button" class="session-btn session-clear-btn" title="New session" (click)="clearSession()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Rules section -->
+    <div class="rules-section" [class.collapsed]="rulesCollapsed">
+      <div class="rules-header" (click)="toggleRules()">
+        <svg class="rules-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        <span>Rules</span>
+        <span class="rules-count" *ngIf="rules.length">({{ rules.length }})</span>
+        <div class="rules-add-dropdown" (click)="$event.stopPropagation()">
+          <button type="button" class="btn-sm rules-add-btn" (click)="toggleRulesDropdown($event)">
+            <span>+ Add</span>
+            <svg class="rules-add-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="rules-add-menu" [class.hidden]="!rulesDropdownOpen">
+            <button type="button" class="rules-add-option" (click)="rulesFileInput.click()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span>From file</span>
+            </button>
+            <input type="file" #rulesFileInput accept=".txt,.md,.json,.yaml,.yml" multiple hidden (change)="addRuleFromFile(rulesFileInput)" />
+            <button type="button" class="rules-add-option" (click)="openRuleEditor()">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <span>Write text</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="rules-body">
+        <div class="rules-list">
+          <div class="rules-empty" *ngIf="rules.length === 0">Add rules from file or write them directly</div>
+          <div *ngFor="let r of rules; let i = index" class="tree-item" style="justify-content:space-between">
+            <span class="tree-item-label">{{ r.name }}</span>
+            <button class="tree-item-remove" style="opacity:1" (click)="removeRule(i)">×</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat messages -->
+    <div class="chat-messages" #chatMessagesEl>
+      <div class="chat-welcome" *ngIf="chatHistory.length === 0 && !isGenerating">
+        <p>Add source &amp; target files, then describe what you want to map.</p>
+      </div>
+      <ng-container *ngFor="let msg of chatHistory; let i = index; let last = last">
+        <!-- Insert stream block right before the last assistant message (the AI answer) -->
+        <ng-container *ngIf="!isGenerating && (streamLog.length || streamTokens) && msg.role === 'assistant' && last">
+          <div class="chat-message assistant thinking-body stream-done">
+            <div class="stream-log">
+              <div *ngFor="let line of streamLog" class="stream-line">{{ line }}</div>
+            </div>
+            <pre class="stream-tokens" *ngIf="streamTokens">{{ streamTokens }}</pre>
+            <button class="stream-expand-btn" (click)="openStreamOverlay()" title="Expand">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+            </button>
+          </div>
+        </ng-container>
+        <div class="chat-message" [ngClass]="msg.role">
+          <div class="role">{{ msg.role === 'user' ? 'You' : 'AI' }}</div>
+          <div>{{ msg.content }}</div>
+        </div>
+      </ng-container>
+      <!-- During generation: stream block at the end -->
+      <div *ngIf="isGenerating" class="chat-message assistant thinking-body">
+        <div class="thinking-dots"><div class="dots"><span></span><span></span><span></span></div></div>
+        <div class="stream-log">
+          <div *ngFor="let line of streamLog" class="stream-line">{{ line }}</div>
+        </div>
+        <pre class="stream-tokens" *ngIf="streamTokens">{{ streamTokens }}</pre>
+        <button class="stream-expand-btn" (click)="openStreamOverlay()" title="Expand">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Chat input -->
+    <div class="chat-input-area">
+      <textarea [(ngModel)]="userInstruction" rows="2" placeholder="Map these schemas..." id="chat-input"
+                (keydown)="onChatKeydown($event)"></textarea>
+      <button type="button" class="btn-stop" *ngIf="isGenerating" title="Stop generation" (click)="stopGeneration()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+      </button>
+      <button type="button" class="btn-send" (click)="sendMessage()" [disabled]="isGenerating" title="Send">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Main content ── -->
+  <main class="main"
+        [class.mapping-minimized]="mappingState === 'minimized'"
+        [class.mapping-maximized]="mappingState === 'maximized'"
+  >
+    <!-- Top row: Source + Target -->
+    <div class="top-row" #topRow>
+      <section class="file-panel" (drop)="onDrop($event, 'source')" (dragover)="onDragOver($event)">
+        <div class="fp-header">
+          <span class="fp-label source-label">Source</span>
+          <div class="fp-actions">
+            <input type="file" #srcInput accept=".csv,.json,.txt" multiple hidden (change)="onSourceFiles(srcInput.files); srcInput.value=''" />
+            <button type="button" class="btn-sm" (click)="srcInput.click()">+ Add</button>
+            <button type="button" class="btn-sm btn-ghost" (click)="loadExample()">Example</button>
+          </div>
+        </div>
+        <div class="fp-body">
+          <div class="fp-tree">
+            <div class="tree-empty" *ngIf="sourceFiles.length === 0">Drop or add CSV, JSON, TXT files</div>
+            <div *ngFor="let f of sourceFiles"
+                 class="tree-item"
+                 [class.active]="f === selectedSourceFile"
+                 (click)="selectSourceFile(f)">
+              <span class="icon">📄</span>
+              <span class="tree-item-label">{{ f.fileName }}</span>
+              <button class="tree-item-remove" (click)="removeSourceFile(f); $event.stopPropagation()">×</button>
+            </div>
+          </div>
+          <div class="tree-splitter" title="Drag to resize"></div>
+          <div class="fp-content">
+            <div class="placeholder-text" *ngIf="!selectedSourceFile">Select a file to preview</div>
+            <app-file-preview *ngIf="selectedSourceFile"
+              [fileName]="selectedSourceFile.fileName"
+              [content]="selectedSourceFile.content">
+            </app-file-preview>
+          </div>
+        </div>
+      </section>
+
+      <div class="v-splitter" #vSplitter title="Drag to resize"></div>
+
+      <section class="file-panel" (drop)="onDrop($event, 'target')" (dragover)="onDragOver($event)">
+        <div class="fp-header">
+          <span class="fp-label target-label">Target</span>
+          <div class="fp-actions">
+            <input type="file" #tgtInput accept=".csv,.json,.txt" multiple hidden (change)="onTargetFiles(tgtInput.files); tgtInput.value=''" />
+            <button type="button" class="btn-sm" (click)="tgtInput.click()">+ Add</button>
+          </div>
+        </div>
+        <div class="fp-body">
+          <div class="fp-tree">
+            <div class="tree-empty" *ngIf="targetFiles.length === 0">Drop or add CSV, JSON, TXT files</div>
+            <div *ngFor="let f of targetFiles"
+                 class="tree-item"
+                 [class.active]="f === selectedTargetFile"
+                 (click)="selectTargetFile(f)">
+              <span class="icon">📄</span>
+              <span class="tree-item-label">{{ f.fileName }}</span>
+              <button class="tree-item-remove" (click)="removeTargetFile(f); $event.stopPropagation()">×</button>
+            </div>
+          </div>
+          <div class="tree-splitter" title="Drag to resize"></div>
+          <div class="fp-content">
+            <div class="placeholder-text" *ngIf="!selectedTargetFile">Select a file to preview</div>
+            <app-file-preview *ngIf="selectedTargetFile"
+              [fileName]="selectedTargetFile.fileName"
+              [content]="selectedTargetFile.content">
+            </app-file-preview>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Horizontal splitter -->
+    <div class="h-splitter" #hSplitter title="Drag to resize"></div>
+
+    <!-- Bottom row: Mapping result -->
+    <section class="bottom-row" #bottomRow>
+      <div class="mapping-header">
+        <span class="mapping-title">Mapping Result</span>
+        <span class="mapping-confidence" *ngIf="currentMapping"
+              [style.color]="getConfColor(confPercent(currentMapping.global_confidence))">{{ confPercent(currentMapping.global_confidence) }}% confidence</span>
+
+        <!-- Unmapped filter -->
+        <button type="button" class="unmapped-filter-btn" *ngIf="unmappedCount > 0" (click)="toggleUnmappedFilter()"
+                [class.active]="showUnmappedOnly" title="Show unmapped only">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          <span>Unmapped</span>
+          <span class="unmapped-filter-badge">{{ unmappedCount }}</span>
+        </button>
+
+        <!-- Export dropdown -->
+        <div class="export-dropdown" *ngIf="currentMapping">
+          <button type="button" class="ctrl-btn export-trigger" (click)="toggleExportMenu()" title="Export">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <div class="export-menu" [class.hidden]="!showExportMenu">
+            <button type="button" class="export-item" (click)="exportAs('pdf')">PDF</button>
+            <button type="button" class="export-item" (click)="exportAs('csv')">CSV</button>
+            <button type="button" class="export-item" (click)="exportAs('json')">JSON</button>
+            <button type="button" class="export-item" (click)="exportAs('sql')">SQL Queries</button>
+            <button type="button" class="export-item" (click)="exportAs('databricks')">Databricks / PySpark</button>
+          </div>
+        </div>
+
+        <!-- Mapping controls -->
+        <div class="mapping-controls">
+          <button type="button" class="ctrl-btn" *ngIf="mappingState !== 'minimized'" (click)="minimizeMapping()" title="Minimize">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+          </button>
+          <button type="button" class="ctrl-btn" *ngIf="mappingState !== 'maximized'" (click)="maximizeMapping()" title="Maximize">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+          </button>
+          <button type="button" class="ctrl-btn" *ngIf="mappingState !== 'normal'" (click)="restoreMapping()" title="Restore">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="1"/><path d="M9 3h10a2 2 0 012 2v10"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="mapping-body" *ngIf="mappingState !== 'minimized'">
+        <div class="placeholder-text" *ngIf="!currentMapping">Send a message in the chat to generate the mapping.</div>
+        <ng-container *ngIf="currentMapping">
+          <p class="analysis-text">{{ currentMapping.analysis_summary }}</p>
+
+          <div *ngFor="let group of groupedMappings()" class="mapping-group">
+            <div class="mapping-group-header">
+              <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              <span class="group-label">{{ group.table }}</span>
+              <span class="group-source-label" *ngIf="group.sourceTables.length">from <span>{{ group.sourceTables.join(', ') }}</span></span>
+              <span class="group-count">{{ group.totalCount }} column{{ group.totalCount !== 1 ? 's' : '' }}
+                <span class="group-unmapped-note" *ngIf="group.unmappedCount > 0">({{ group.unmappedCount }} unmapped)</span>
+              </span>
+              <span class="group-conf" *ngIf="group.mappedCount > 0" [style.color]="group.confColor">{{ group.avgConf }}%</span>
+            </div>
+            <div class="mapping-group-body">
+            <table class="mapping-table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th></th>
+                  <th>Target</th>
+                  <th>Type</th>
+                  <th>Confidence</th>
+                  <th>Transformation</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <ng-container *ngFor="let item of group.rows">
+                  <tr [class.validated-row]="item.row._status === 'validated'"
+                      [class.unmapped-row]="!isMapped(item.row)"
+                      [class.mapped-row]="isMapped(item.row)">
+                    <!-- Source -->
+                    <td class="col-source">
+                      <span *ngIf="isMapped(item.row)">{{ (item.row.source_columns || []).join(', ') }}</span>
+                      <span *ngIf="!isMapped(item.row)" class="unmapped-dash">—</span>
+                    </td>
+                    <!-- Arrow -->
+                    <td class="col-arrow">→</td>
+                    <!-- Target -->
+                    <td class="col-target">{{ shortCol(item.row.target_column) }}</td>
+                    <!-- Type -->
+                    <td class="col-type">
+                      <span *ngIf="isMapped(item.row)" class="match-badge" [ngClass]="item.row.match_type || 'semantic'">{{ item.row.match_type || 'semantic' }}</span>
+                      <span *ngIf="!isMapped(item.row)" class="unmapped-dash">—</span>
+                    </td>
+                    <!-- Confidence -->
+                    <td>
+                      <div *ngIf="isMapped(item.row)" class="conf-bar">
+                        <div class="conf-bar-track"><div class="conf-bar-fill" [style.width.%]="confPercent(item.row.confidence_score)" [style.background]="getConfColor(confPercent(item.row.confidence_score))"></div></div>
+                        <span class="conf-bar-label" [style.color]="getConfColor(confPercent(item.row.confidence_score))">{{ confPercent(item.row.confidence_score) }}%</span>
+                      </div>
+                      <span *ngIf="!isMapped(item.row)" class="unmapped-dash">—</span>
+                    </td>
+                    <!-- Transformation -->
+                    <td class="col-transform">
+                      <span *ngIf="isMapped(item.row) && item.row.transformation_rule">{{ item.row.transformation_rule }}</span>
+                      <span *ngIf="isMapped(item.row) && !item.row.transformation_rule" class="no-transform">direct</span>
+                      <span *ngIf="!isMapped(item.row)" class="unmapped-dash">—</span>
+                    </td>
+                    <!-- Status -->
+                    <td class="col-status">
+                      <span *ngIf="!isMapped(item.row)" class="status-badge status-unmapped">Unmapped</span>
+                      <span *ngIf="isMapped(item.row) && item.row._status === 'validated'" class="status-badge status-validated">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                        Validated
+                      </span>
+                      <span *ngIf="isMapped(item.row) && item.row._status === 'pending'" class="status-badge status-pending">Pending</span>
+                    </td>
+                    <!-- Actions -->
+                    <td class="col-actions">
+                      <div class="mapping-actions" *ngIf="isMapped(item.row)">
+                        <button *ngIf="item.row._status !== 'validated'" class="action-btn validate-btn" (click)="validateRow(item.idx)" title="Validate mapping">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                        </button>
+                        <button class="action-btn change-btn" (click)="openSourcePicker($event, item.idx)" title="Change source column">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        <button *ngIf="item.row._status === 'validated'" class="action-btn rollback-btn" (click)="rollbackRow(item.idx)" title="Rollback to original">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 105.64-11.36L1 10"/></svg>
+                        </button>
+                        <button class="action-btn unmap-btn" (click)="unmapRow(item.idx)" title="Remove mapping">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
+                      </div>
+                      <div class="mapping-actions" *ngIf="!isMapped(item.row)">
+                        <button class="action-btn map-btn" (click)="openSourcePicker($event, item.idx)" title="Map this column">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr *ngIf="item.row.reasoning && isMapped(item.row)" class="reason-row" [class.validated-row]="item.row._status === 'validated'">
+                    <td colspan="8">{{ item.row.reasoning }}</td>
+                  </tr>
+                </ng-container>
+              </tbody>
+            </table>
+            </div>
+          </div>
+        </ng-container>
+      </div>
+    </section>
+
+    <!-- Error toast -->
+    <div class="error-toast" *ngIf="errorMessage">
+      <p>{{ errorMessage }}</p>
+      <button type="button" class="error-close" (click)="errorMessage = ''">×</button>
+    </div>
+
+    <!-- Session toast -->
+    <div class="session-toast" *ngIf="sessionToast" [class.session-toast-out]="sessionToastFading">{{ sessionToast }}</div>
+  </main>
+</div>
+
+<!-- ── Source picker dropdown ── -->
+<div class="source-picker-popup" *ngIf="showSourcePicker"
+     [style.position]="'fixed'" [style.top.px]="pickerTop" [style.left.px]="pickerLeft" [style.z-index]="100">
+  <div class="picker-header">Choose source column</div>
+  <div class="picker-list">
+    <button *ngFor="let col of sourcePickerOptions" class="picker-option"
+            [class.current]="isCurrentSource(col)"
+            (click)="pickSource(col)">{{ col }}</button>
+    <div *ngIf="sourcePickerOptions.length === 0" style="padding:1rem;color:var(--muted);font-size:0.8rem">No source columns found</div>
+  </div>
+</div>
+<div *ngIf="showSourcePicker" style="position:fixed;inset:0;z-index:99" (click)="showSourcePicker = false"></div>
+
+<!-- ── Rule editor modal ── -->
+<div class="rule-editor-overlay" *ngIf="showRuleEditor" (click)="showRuleEditor = false">
+  <div class="rule-editor-panel" (click)="$event.stopPropagation()">
+    <div class="rule-editor-header">
+      <span class="rule-editor-title">Add Rule</span>
+      <button type="button" class="ctrl-btn" (click)="showRuleEditor = false">×</button>
+    </div>
+    <div class="rule-editor-body">
+      <div class="rule-editor-field">
+        <label class="rule-editor-label">Name</label>
+        <input class="rule-editor-input" [(ngModel)]="ruleEditorName" placeholder="Rule name (optional)" />
+      </div>
+      <div class="rule-editor-field rule-editor-field-grow">
+        <label class="rule-editor-label">Content</label>
+        <textarea class="rule-editor-textarea" [(ngModel)]="ruleEditorContent" placeholder="Paste or write your rule here..."></textarea>
+      </div>
+    </div>
+    <div class="rule-editor-footer">
+      <button type="button" class="btn-sm btn-ghost" (click)="showRuleEditor = false">Cancel</button>
+      <button type="button" class="btn-sm" (click)="saveRule()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Session picker modal ── -->
+<div class="rule-editor-overlay" *ngIf="showSessionPicker" (click)="showSessionPicker = false">
+  <div class="rule-editor-panel session-picker-panel" (click)="$event.stopPropagation()">
+    <div class="rule-editor-header">
+      <span class="rule-editor-title">Load Session</span>
+      <button type="button" class="ctrl-btn" (click)="showSessionPicker = false">×</button>
+    </div>
+    <div class="session-picker-body">
+      <div class="session-picker-empty" *ngIf="savedSessions.length === 0">No saved sessions</div>
+      <div *ngFor="let s of savedSessions" class="session-picker-item" (click)="loadSession(s)">
+        <div class="session-picker-info">
+          <span class="session-picker-name">{{ s.name }}</span>
+          <span class="session-picker-meta">{{ s.sourceFiles.length }} source, {{ s.targetFiles.length }} target files</span>
+        </div>
+        <button class="session-picker-delete" (click)="deleteSession(s); $event.stopPropagation()" title="Delete">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Stream overlay ── -->
+<div class="stream-overlay" *ngIf="showStreamOverlay" (click)="closeStreamOverlay()">
+  <div class="stream-overlay-panel" (click)="$event.stopPropagation()">
+    <div class="stream-overlay-header">
+      <span class="stream-overlay-title">LLM Stream</span>
+      <span class="stream-overlay-status" *ngIf="!isGenerating && streamTokens">Complete</span>
+      <div class="thinking-dots" *ngIf="isGenerating"><div class="dots"><span></span><span></span><span></span></div></div>
+      <button class="stream-overlay-close" (click)="closeStreamOverlay()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="stream-overlay-body">
+      <div class="stream-log">
+        <div *ngFor="let line of streamLog" class="stream-line">{{ line }}</div>
+      </div>
+      <pre class="stream-tokens" *ngIf="streamTokens">{{ streamTokens }}</pre>
+      <div *ngIf="!streamTokens && !isGenerating && streamLog.length" class="stream-empty">No token content received.</div>
+    </div>
+  </div>
+</div>

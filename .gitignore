@@ -1,5 +1,13 @@
-node_modules/
-dist/
-.env
-.env.local
-*.log
+# Backend
+backend/**/bin/
+backend/**/obj/
+
+# IDE
+.idea/
+.vscode/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
