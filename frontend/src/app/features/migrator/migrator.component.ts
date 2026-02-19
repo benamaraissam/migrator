@@ -614,142 +614,240 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     const W = doc.internal.pageSize.getWidth();
     const H = doc.internal.pageSize.getHeight();
     const mx = 14;
-    let y = 14;
+    let y = 0;
 
     const hexToRgb = (h: string): [number, number, number] => {
       const r = parseInt(h.slice(1, 3), 16), g = parseInt(h.slice(3, 5), 16), b = parseInt(h.slice(5, 7), 16);
       return [r, g, b];
     };
     const pdfConfColor = (pct: number) => pct >= 80 ? '#16a34a' : pct >= 50 ? '#ca8a04' : '#dc2626';
-    const pdfBadgeColor = (type: string) => {
-      const map: Record<string, string> = { exact: '#16a34a', semantic: '#2563eb', derived: '#9333ea', transformed: '#ca8a04', incompatible: '#dc2626' };
+    const pdfBadgeColor = (type: string): string => {
+      const map: Record<string, string> = { exact: '#16a34a', semantic: '#2563eb', derived: '#9333ea', transformed: '#ca8a04', manual: '#0891b2', incompatible: '#dc2626' };
       return map[type] || '#6b7280';
     };
-
-    doc.setFillColor(15, 23, 42);
-    doc.rect(0, 0, W, 28, 'F');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.setTextColor(255, 255, 255);
-    doc.text('Schema Mapping Report', mx, 12);
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(148, 163, 184);
-    doc.text('Data Migration Mapping Analysis', mx, 18);
-
     const gc = this.confPercent(this.currentMapping.global_confidence);
     const gcCol = hexToRgb(pdfConfColor(gc));
     const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const timeStr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const totalMappings = this.currentMapping.mappings?.length ?? 0;
+    const totalUnmapped = (this.currentMapping.unmapped_source_columns?.length ?? 0) + (this.currentMapping.unmapped_target_columns?.length ?? 0);
+
+    const addPageFooter = () => {
+      doc.setFontSize(6);
+      doc.setTextColor(148, 163, 184);
+      doc.text('Schema Mapping Report — Confidential', mx, H - 5);
+      doc.text(`Generated ${dateStr} at ${timeStr}`, W - mx, H - 5, { align: 'right' });
+      const pageCount = (doc as any).internal.getNumberOfPages();
+      doc.text(`Page ${doc.getCurrentPageInfo().pageNumber} of ${pageCount}`, W / 2, H - 5, { align: 'center' });
+    };
+
+    // ── Header ──
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, W, 30, 'F');
+    doc.setFillColor(37, 99, 246);
+    doc.rect(0, 30, W, 1, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(255, 255, 255);
+    doc.text('Schema Mapping Report', mx, 13);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(148, 163, 184);
+    doc.text('Data Migration Mapping Analysis', mx, 20);
+
     doc.setFontSize(8);
     doc.setTextColor(148, 163, 184);
-    doc.text(`${dateStr} at ${timeStr}`, W - mx, 12, { align: 'right' });
+    doc.text(`${dateStr} at ${timeStr}`, W - mx, 10, { align: 'right' });
 
-    doc.setFontSize(11);
+    doc.setFontSize(13);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...gcCol);
-    doc.text(`${gc.toFixed(0)}% confidence`, W - mx, 19, { align: 'right' });
+    doc.text(`${gc.toFixed(0)}%`, W - mx, 20, { align: 'right' });
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(148, 163, 184);
+    doc.text('Global Confidence', W - mx, 25, { align: 'right' });
 
     y = 36;
 
+    // ── Summary cards ──
+    const cardW = (W - 2 * mx - 8) / 3;
+    const cards = [
+      { label: 'Mapped Columns', value: `${totalMappings}`, color: [22, 163, 74] as [number, number, number] },
+      { label: 'Unmapped Columns', value: `${totalUnmapped}`, color: [249, 115, 22] as [number, number, number] },
+      { label: 'Confidence Score', value: `${gc.toFixed(0)}%`, color: gcCol },
+    ];
+    for (let i = 0; i < cards.length; i++) {
+      const cx = mx + i * (cardW + 4);
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(cx, y, cardW, 14, 2, 2, 'FD');
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 116, 139);
+      doc.text(cards[i].label, cx + 4, y + 5);
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...cards[i].color);
+      doc.text(cards[i].value, cx + 4, y + 12);
+    }
+    y += 20;
+
+    // ── Analysis summary ──
     if (this.currentMapping.analysis_summary) {
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(mx, y, W - 2 * mx, 14, 2, 2, 'F');
-      doc.setFontSize(8);
+      doc.setDrawColor(226, 232, 240);
+      const summaryLines = doc.splitTextToSize(this.currentMapping.analysis_summary, W - 2 * mx - 10);
+      const summaryHeight = Math.min(summaryLines.length, 4) * 3.5 + 6;
+      doc.roundedRect(mx, y, W - 2 * mx, summaryHeight, 2, 2, 'FD');
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(30, 41, 59);
+      doc.text('Analysis Summary', mx + 4, y + 4.5);
       doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
       doc.setTextColor(71, 85, 105);
-      const lines = doc.splitTextToSize(this.currentMapping.analysis_summary, W - 2 * mx - 8);
-      doc.text(lines.slice(0, 3), mx + 4, y + 5);
-      y += 18;
+      doc.text(summaryLines.slice(0, 4), mx + 4, y + 8.5);
+      y += summaryHeight + 4;
     }
 
+    // ── Mapping tables ──
     const groups = this.groupedMappings();
 
     for (const group of groups) {
-      if (y > H - 40) { doc.addPage(); y = 14; }
+      if (y > H - 40) { addPageFooter(); doc.addPage(); y = 10; }
 
       const avgCol = hexToRgb(pdfConfColor(group.avgConf));
 
+      // Group header
       doc.setFillColor(15, 23, 42);
-      doc.roundedRect(mx, y, W - 2 * mx, 9, 1.5, 1.5, 'F');
+      doc.roundedRect(mx, y, W - 2 * mx, 10, 2, 2, 'F');
       doc.setFont('courier', 'bold');
       doc.setFontSize(10);
       doc.setTextColor(255, 255, 255);
       const tableLabel = group.table === '_default' ? 'Mappings' : group.table;
-      doc.text(tableLabel, mx + 4, y + 6);
+      doc.text(tableLabel, mx + 5, y + 7);
 
+      let headerX = mx + 5 + doc.getTextWidth(tableLabel) + 4;
       if (group.sourceTables.length) {
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7);
         doc.setTextColor(148, 163, 184);
-        doc.text(`from ${group.sourceTables.join(', ')}`, mx + 4 + doc.getTextWidth(tableLabel) + 6, y + 6);
-      }
-
-      if (group.mappedCount > 0) {
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(8);
-        doc.setTextColor(...avgCol);
-        doc.text(`${group.avgConf.toFixed(0)}%`, W - mx - 4, y + 6, { align: 'right' });
+        doc.text(`← ${group.sourceTables.join(', ')}`, headerX, y + 7);
       }
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
       doc.setTextColor(148, 163, 184);
-      const countLabel = `${group.totalCount} col${group.totalCount !== 1 ? 's' : ''}`;
-      doc.text(countLabel, W - mx - 16, y + 6, { align: 'right' });
+      const statsText = `${group.totalCount} columns · ${group.mappedCount} mapped · ${group.unmappedCount} unmapped`;
+      doc.text(statsText, W - mx - 30, y + 7, { align: 'right' });
 
-      y += 11;
+      if (group.mappedCount > 0) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(...avgCol);
+        doc.text(`${group.avgConf.toFixed(0)}%`, W - mx - 5, y + 7, { align: 'right' });
+      }
 
-      const tableBody = group.rows.map((item: any) => {
+      y += 12;
+
+      // Build rows: mapping row + reasoning sub-row
+      const tableBody: string[][] = [];
+      const reasoningRowIndices = new Set<number>();
+
+      for (const item of group.rows) {
         const r = item.row;
         if (!this.isMapped(r)) {
-          return ['—', '→', this.shortCol(r.target_column), '—', '—', '—', 'Unmapped'];
+          tableBody.push(['—', '→', this.shortCol(r.target_column), '—', '—', '—', 'Unmapped']);
+        } else {
+          const src = (r.source_columns || []).join(', ') || '—';
+          const pct = this.confPercent(r.confidence_score);
+          const mt = r.match_type || 'semantic';
+          const transform = r.transformation_rule || '';
+          const status = r._status === 'validated' ? 'Validated' : 'Pending';
+          tableBody.push([src, '→', this.shortCol(r.target_column), mt, `${pct.toFixed(0)}%`, transform || 'direct', status]);
+
+          const reasoning = (r.reasoning || '').trim();
+          if (reasoning) {
+            reasoningRowIndices.add(tableBody.length);
+            tableBody.push([{ content: `↳ ${reasoning}`, colSpan: 7 } as any]);
+          }
         }
-        const src = (r.source_columns || []).join(', ') || '—';
-        const pct = this.confPercent(r.confidence_score);
-        const mt = r.match_type || 'semantic';
-        const transform = r.transformation_rule || '';
-        const status = r._status === 'validated' ? 'Validated' : 'Pending';
-        return [src, '→', this.shortCol(r.target_column), mt, `${pct.toFixed(0)}%`, transform || 'direct', status];
-      });
+      }
+
+      const tableW = W - 2 * mx;
+      const arrowW = 7;
+      const rest = tableW - arrowW;
+      const cw = {
+        src: rest * 0.25,
+        arrow: arrowW,
+        tgt: rest * 0.20,
+        type: rest * 0.10,
+        conf: rest * 0.07,
+        transform: rest * 0.25,
+        status: rest * 0.13,
+      };
 
       autoTable(doc, {
         startY: y,
-        head: [['Source', '', 'Target', 'Type', 'Conf.', 'Transformation', 'Status']],
+        tableWidth: tableW,
+        head: [['Source Column(s)', '', 'Target Column', 'Match Type', 'Conf.', 'Transformation', 'Status']],
         body: tableBody,
         margin: { left: mx, right: mx },
         theme: 'grid',
+        styles: {
+          lineColor: [226, 232, 240],
+          lineWidth: 0.2,
+          overflow: 'linebreak',
+          font: 'helvetica',
+        },
         headStyles: {
           fillColor: [241, 245, 249],
-          textColor: [71, 85, 105],
+          textColor: [51, 65, 85],
           fontStyle: 'bold',
           fontSize: 6.5,
-          cellPadding: 2.5,
+          cellPadding: 3,
+          font: 'helvetica',
         },
-        bodyStyles: { fontSize: 7, cellPadding: 2.5, textColor: [30, 41, 59] },
+        bodyStyles: { fontSize: 7, cellPadding: 2.5, textColor: [30, 41, 59], font: 'helvetica' },
         columnStyles: {
-          0: { font: 'courier', textColor: [22, 163, 74], fontStyle: 'bold', cellWidth: 45 },
-          1: { halign: 'center', cellWidth: 8, textColor: [148, 163, 184] },
-          2: { font: 'courier', textColor: [37, 99, 246], fontStyle: 'bold', cellWidth: 35 },
-          3: { cellWidth: 20, fontSize: 6.5 },
-          4: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
-          5: { font: 'courier', fontSize: 6, textColor: [161, 98, 7], cellWidth: 'auto' },
-          6: { cellWidth: 20, halign: 'center', fontSize: 6.5 },
+          0: { font: 'courier', textColor: [22, 163, 74], fontStyle: 'bold', cellWidth: cw.src },
+          1: { halign: 'center', cellWidth: cw.arrow, textColor: [148, 163, 184], font: 'helvetica' },
+          2: { font: 'courier', textColor: [37, 99, 246], fontStyle: 'bold', cellWidth: cw.tgt },
+          3: { cellWidth: cw.type, fontSize: 6.5, font: 'helvetica' },
+          4: { cellWidth: cw.conf, halign: 'center', fontStyle: 'bold', font: 'helvetica' },
+          5: { font: 'courier', fontSize: 6, textColor: [161, 98, 7], cellWidth: cw.transform },
+          6: { cellWidth: cw.status, halign: 'center', fontSize: 6.5, font: 'helvetica' },
         },
         didParseCell: (hookData: any) => {
-          if (hookData.section === 'body' && hookData.column.index === 3) {
+          if (hookData.section !== 'body') return;
+          const rowIdx = hookData.row.index;
+
+          if (reasoningRowIndices.has(rowIdx)) {
+            hookData.cell.styles.font = 'helvetica';
+            hookData.cell.styles.fontSize = 6;
+            hookData.cell.styles.textColor = [100, 116, 139];
+            hookData.cell.styles.fontStyle = 'italic';
+            hookData.cell.styles.fillColor = [248, 249, 252];
+            hookData.cell.styles.cellPadding = { top: 1.5, bottom: 1.5, left: 6, right: 3 };
+            hookData.cell.styles.overflow = 'linebreak';
+            return;
+          }
+
+          if (hookData.column.index === 3) {
             hookData.cell.styles.textColor = hexToRgb(pdfBadgeColor(hookData.cell.raw));
           }
-          if (hookData.section === 'body' && hookData.column.index === 4) {
+          if (hookData.column.index === 4) {
             const val = parseFloat(hookData.cell.raw);
-            hookData.cell.styles.textColor = hexToRgb(pdfConfColor(val));
+            if (!isNaN(val)) hookData.cell.styles.textColor = hexToRgb(pdfConfColor(val));
           }
-          if (hookData.section === 'body' && hookData.column.index === 5 && hookData.cell.raw === 'direct') {
+          if (hookData.column.index === 5 && hookData.cell.raw === 'direct') {
             hookData.cell.styles.textColor = [148, 163, 184];
             hookData.cell.styles.fontStyle = 'italic';
             hookData.cell.styles.font = 'helvetica';
           }
-          if (hookData.section === 'body' && hookData.column.index === 6) {
+          if (hookData.column.index === 6) {
             const status = hookData.cell.raw;
             if (status === 'Validated') {
               hookData.cell.styles.textColor = [22, 163, 74];
@@ -765,38 +863,51 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
         alternateRowStyles: { fillColor: [249, 250, 251] },
       });
 
-      y = ((doc as any).lastAutoTable?.finalY ?? y) + 8;
+      y = ((doc as any).lastAutoTable?.finalY ?? y) + 6;
     }
 
+    // ── Unmapped columns section ──
     const uSrc = this.currentMapping.unmapped_source_columns || [];
     const uTgt = this.currentMapping.unmapped_target_columns || [];
     if (uSrc.length > 0 || uTgt.length > 0) {
-      if (y > H - 30) { doc.addPage(); y = 14; }
+      if (y > H - 30) { addPageFooter(); doc.addPage(); y = 10; }
+      const boxH = 8 + (uSrc.length ? 5 : 0) + (uTgt.length ? 5 : 0);
       doc.setFillColor(254, 242, 242);
-      doc.roundedRect(mx, y, W - 2 * mx, 16, 2, 2, 'F');
       doc.setDrawColor(252, 165, 165);
-      doc.roundedRect(mx, y, W - 2 * mx, 16, 2, 2, 'S');
+      doc.roundedRect(mx, y, W - 2 * mx, boxH, 2, 2, 'FD');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(153, 27, 27);
       doc.text('Unmapped Columns', mx + 4, y + 5);
+      let uy = y + 9;
       doc.setFont('courier', 'normal');
-      doc.setFontSize(7);
+      doc.setFontSize(6.5);
       doc.setTextColor(185, 28, 28);
       if (uSrc.length) {
-        doc.text(`Source: ${uSrc.join(', ')}`, mx + 4, y + 10);
+        const srcText = doc.splitTextToSize(`Source: ${uSrc.join(', ')}`, W - 2 * mx - 10);
+        doc.text(srcText[0], mx + 4, uy);
+        uy += 5;
       }
       if (uTgt.length) {
-        doc.text(`Target: ${uTgt.join(', ')}`, mx + 4, y + 14);
+        const tgtText = doc.splitTextToSize(`Target: ${uTgt.join(', ')}`, W - 2 * mx - 10);
+        doc.text(tgtText[0], mx + 4, uy);
       }
     }
 
-    doc.setFontSize(6);
-    doc.setTextColor(148, 163, 184);
-    doc.text('Schema Mapping Migrator', mx, H - 6);
-    doc.text(dateStr, W - mx, H - 6, { align: 'right' });
+    // ── Footer on all pages ──
+    const totalPages = (doc as any).internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(226, 232, 240);
+      doc.line(mx, H - 9, W - mx, H - 9);
+      doc.setFontSize(6);
+      doc.setTextColor(148, 163, 184);
+      doc.text('Schema Mapping Report — Confidential', mx, H - 5);
+      doc.text(`Generated ${dateStr} at ${timeStr}`, W - mx, H - 5, { align: 'right' });
+      doc.text(`Page ${p} of ${totalPages}`, W / 2, H - 5, { align: 'center' });
+    }
 
-    doc.save('schema_mapping.pdf');
+    doc.save('schema_mapping_report.pdf');
   }
 
   private downloadFile(content: string, fileName: string, mime: string): void {

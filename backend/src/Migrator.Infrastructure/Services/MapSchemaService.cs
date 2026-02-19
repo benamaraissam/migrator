@@ -17,14 +17,14 @@ public class MapSchemaService : IMapSchemaService
     private readonly ChatClient _chatClient;
     private readonly string _model;
 
+    private int _maxTokens = 128000;
+
     public MapSchemaService(IConfiguration configuration, ILogger<MapSchemaService> logger)
     {
         _logger = logger;
-        var apiKey = configuration["HF_TOKEN"];
-        if (string.IsNullOrEmpty(apiKey)) apiKey = configuration["LLM_API_KEY"];
-        if (string.IsNullOrEmpty(apiKey)) apiKey = configuration["OPENAI_API_KEY"];
+        var apiKey = configuration["LLM_API_KEY"];
         var baseUrl = configuration["LLM_BASE_URL"];
-        _model = configuration["LLM_MODEL"] ?? configuration["OPENAI_MODEL"] ?? "gpt-4o-mini";
+        _model = configuration["LLM_MODEL"];
 
         if (int.TryParse(configuration["LLM_MAX_TOKENS"], out var maxTok) && maxTok > 0)
             _maxTokens = maxTok;
@@ -46,7 +46,6 @@ public class MapSchemaService : IMapSchemaService
         }
     }
 
-    private int _maxTokens = 128000;
 
     public async Task<MappingResult> MapSchemaAsync(
         IReadOnlyList<RawFile> sourceFiles,

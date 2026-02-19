@@ -1,6 +1,7 @@
 # Backend
 backend/**/bin/
 backend/**/obj/
+backend/**/appsettings.Development.json
 
 # IDE
 .idea/
