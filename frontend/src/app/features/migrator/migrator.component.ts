@@ -771,7 +771,12 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
           const reasoning = (r.reasoning || '').trim();
           if (reasoning) {
             reasoningRowIndices.add(tableBody.length);
-            tableBody.push([{ content: `↳ ${reasoning}`, colSpan: 7 } as any]);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7);
+            const maxReasonW = W - 2 * mx - 10;
+            const wrappedLines = doc.splitTextToSize(`${reasoning}`, maxReasonW);
+            const wrappedText = wrappedLines.slice(0, 3).join('\n');
+            tableBody.push([{ content: wrappedText, colSpan: 7 } as any]);
           }
         }
       }
@@ -812,13 +817,13 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
         },
         bodyStyles: { fontSize: 7, cellPadding: 2.5, textColor: [30, 41, 59], font: 'helvetica' },
         columnStyles: {
-          0: { font: 'courier', textColor: [22, 163, 74], fontStyle: 'bold', cellWidth: cw.src },
-          1: { halign: 'center', cellWidth: cw.arrow, textColor: [148, 163, 184], font: 'helvetica' },
-          2: { font: 'courier', textColor: [37, 99, 246], fontStyle: 'bold', cellWidth: cw.tgt },
-          3: { cellWidth: cw.type, fontSize: 6.5, font: 'helvetica' },
-          4: { cellWidth: cw.conf, halign: 'center', fontStyle: 'bold', font: 'helvetica' },
-          5: { font: 'courier', fontSize: 6, textColor: [161, 98, 7], cellWidth: cw.transform },
-          6: { cellWidth: cw.status, halign: 'center', fontSize: 6.5, font: 'helvetica' },
+          0: { cellWidth: cw.src },
+          1: { halign: 'center', cellWidth: cw.arrow },
+          2: { cellWidth: cw.tgt },
+          3: { cellWidth: cw.type, fontSize: 6.5 },
+          4: { cellWidth: cw.conf, halign: 'center' },
+          5: { fontSize: 6, cellWidth: cw.transform },
+          6: { cellWidth: cw.status, halign: 'center', fontSize: 6.5 },
         },
         didParseCell: (hookData: any) => {
           if (hookData.section !== 'body') return;
@@ -826,28 +831,47 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
           if (reasoningRowIndices.has(rowIdx)) {
             hookData.cell.styles.font = 'helvetica';
-            hookData.cell.styles.fontSize = 6;
+            hookData.cell.styles.fontSize = 7;
             hookData.cell.styles.textColor = [100, 116, 139];
-            hookData.cell.styles.fontStyle = 'italic';
+            hookData.cell.styles.fontStyle = 'normal';
             hookData.cell.styles.fillColor = [248, 249, 252];
             hookData.cell.styles.cellPadding = { top: 1.5, bottom: 1.5, left: 6, right: 3 };
             hookData.cell.styles.overflow = 'linebreak';
             return;
           }
 
-          if (hookData.column.index === 3) {
+          const ci = hookData.column.index;
+          if (ci === 0) {
+            hookData.cell.styles.font = 'courier';
+            hookData.cell.styles.textColor = [22, 163, 74];
+            hookData.cell.styles.fontStyle = 'bold';
+          }
+          if (ci === 1) {
+            hookData.cell.styles.textColor = [148, 163, 184];
+          }
+          if (ci === 2) {
+            hookData.cell.styles.font = 'courier';
+            hookData.cell.styles.textColor = [37, 99, 246];
+            hookData.cell.styles.fontStyle = 'bold';
+          }
+          if (ci === 3) {
             hookData.cell.styles.textColor = hexToRgb(pdfBadgeColor(hookData.cell.raw));
           }
-          if (hookData.column.index === 4) {
+          if (ci === 4) {
             const val = parseFloat(hookData.cell.raw);
             if (!isNaN(val)) hookData.cell.styles.textColor = hexToRgb(pdfConfColor(val));
+            hookData.cell.styles.fontStyle = 'bold';
           }
-          if (hookData.column.index === 5 && hookData.cell.raw === 'direct') {
-            hookData.cell.styles.textColor = [148, 163, 184];
-            hookData.cell.styles.fontStyle = 'italic';
-            hookData.cell.styles.font = 'helvetica';
+          if (ci === 5) {
+            hookData.cell.styles.font = 'courier';
+            hookData.cell.styles.textColor = [161, 98, 7];
+            if (hookData.cell.raw === 'direct') {
+              hookData.cell.styles.textColor = [148, 163, 184];
+              hookData.cell.styles.fontStyle = 'italic';
+              hookData.cell.styles.font = 'helvetica';
+            }
           }
-          if (hookData.column.index === 6) {
+          if (ci === 6) {
             const status = hookData.cell.raw;
             if (status === 'Validated') {
               hookData.cell.styles.textColor = [22, 163, 74];
