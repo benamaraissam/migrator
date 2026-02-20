@@ -1538,12 +1538,15 @@ app-migrator {
   border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255,255,255,0.04);
   width: min(860px, calc(100vw - 40px));
-  max-width: 860px;
+  max-width: calc(100vw - 20px);
   min-width: 680px;
   height: min(72vh, 620px);
+  min-height: 420px;
+  max-height: calc(100vh - 20px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  resize: both;
   animation: editorSlideIn 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1616,7 +1619,7 @@ app-migrator {
 
 .picker-editor-grid {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: minmax(260px, 40%) minmax(340px, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -1630,6 +1633,7 @@ app-migrator {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .picker-column-right {
@@ -2000,6 +2004,9 @@ app-migrator {
   color: var(--text2);
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .picker-option:hover {

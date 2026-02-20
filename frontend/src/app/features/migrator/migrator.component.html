@@ -364,6 +364,7 @@
       </div>
       <div class="picker-list">
         <button *ngFor="let col of filteredSourcePickerOptions()" class="picker-option"
+                [title]="col"
                 [class.current]="isCurrentSource(col)"
                 (click)="pickSource(col)">{{ col }}</button>
         <div *ngIf="sourcePickerOptions.length === 0" class="picker-empty-msg">No source columns found</div>
