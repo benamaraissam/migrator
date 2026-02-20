@@ -44,10 +44,14 @@
       <div class="rules-body">
         <div class="rules-list">
           <div class="rules-empty" *ngIf="rules.length === 0">Add rules from file or write them directly</div>
-          <div *ngFor="let r of rules; let i = index" class="tree-item" style="justify-content:space-between">
-            <span class="tree-item-label">{{ r.name }}</span>
-            <button class="tree-item-remove" style="opacity:1" (click)="removeRule(i)">×</button>
+          <div *ngFor="let r of rules; let i = index" class="rule-item" [class.active]="isRuleActive(i)" (click)="toggleRulePreview(i)">
+            <svg class="rule-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+            <span class="rule-name">{{ r.name }}</span>
+            <button type="button" class="rule-remove" title="Remove" (click)="removeRule(i); $event.stopPropagation()">×</button>
           </div>
+        </div>
+        <div class="rules-preview" [class.visible]="activeRuleIndex !== null">
+          <ng-container *ngIf="activeRuleIndex !== null">{{ activeRuleContent() }}</ng-container>
         </div>
       </div>
     </div>
@@ -225,8 +229,9 @@
         <ng-container *ngIf="currentMapping">
           <p class="analysis-text">{{ currentMapping.analysis_summary }}</p>
 
-          <div *ngFor="let group of groupedMappings()" class="mapping-group">
-            <div class="mapping-group-header">
+          <div *ngFor="let group of groupedMappings()" class="mapping-group"
+               [class.collapsed]="isMappingGroupCollapsed(group.table)">
+            <div class="mapping-group-header" (click)="toggleMappingGroup(group.table)">
               <svg class="group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
               <span class="group-label">{{ group.table }}</span>
               <span class="group-source-label" *ngIf="group.sourceTables.length">from <span>{{ group.sourceTables.join(', ') }}</span></span>
@@ -338,17 +343,103 @@
 </div>
 
 <!-- ── Source picker dropdown ── -->
-<div class="source-picker-popup" *ngIf="showSourcePicker"
-     [style.position]="'fixed'" [style.top.px]="pickerTop" [style.left.px]="pickerLeft" [style.z-index]="100">
-  <div class="picker-header">Choose source column</div>
-  <div class="picker-list">
-    <button *ngFor="let col of sourcePickerOptions" class="picker-option"
-            [class.current]="isCurrentSource(col)"
-            (click)="pickSource(col)">{{ col }}</button>
-    <div *ngIf="sourcePickerOptions.length === 0" style="padding:1rem;color:var(--muted);font-size:0.8rem">No source columns found</div>
+<div class="source-picker-popup" *ngIf="showSourcePicker">
+  <div class="picker-header">
+    <div class="picker-header-title">
+      <strong>Edit Mapping</strong>
+      <span>Source columns, type, confidence and SQL transformation</span>
+    </div>
+    <button type="button" class="picker-close-btn" (click)="closeSourcePicker()" title="Close">×</button>
+  </div>
+  <div class="picker-editor-grid">
+    <div class="picker-column picker-column-left">
+      <div class="picker-search-wrap">
+        <input
+          class="picker-search-input"
+          type="text"
+          [(ngModel)]="sourcePickerQuery"
+          placeholder="Search source column..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="picker-list">
+        <button *ngFor="let col of filteredSourcePickerOptions()" class="picker-option"
+                [class.current]="isCurrentSource(col)"
+                (click)="pickSource(col)">{{ col }}</button>
+        <div *ngIf="sourcePickerOptions.length === 0" class="picker-empty-msg">No source columns found</div>
+        <div *ngIf="sourcePickerOptions.length > 0 && filteredSourcePickerOptions().length === 0" class="picker-empty-msg">No matching columns</div>
+      </div>
+    </div>
+
+    <div class="picker-column picker-column-right">
+      <div class="picker-meta">
+        <!-- Match Type pills -->
+        <div class="picker-section">
+          <div class="picker-section-label">Match Type</div>
+          <div class="match-type-pills">
+            <button *ngFor="let mt of matchTypes"
+                    class="mt-pill"
+                    [class.active]="sourcePickerMatchType === mt.value"
+                    [style.--pill-color]="mt.color"
+                    (click)="setMatchType(mt.value)">
+              <span class="mt-dot"></span>
+              {{ mt.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Confidence slider -->
+        <div class="picker-section">
+          <div class="picker-section-label">
+            Confidence
+            <span class="conf-value-badge"
+                  [style.background]="getConfColor(sourcePickerConfidence)"
+                  [style.color]="'#fff'">{{ sourcePickerConfidence }}%</span>
+          </div>
+          <div class="conf-slider-wrap">
+            <input type="range" class="conf-range" min="0" max="100" step="1"
+                   [(ngModel)]="sourcePickerConfidence" (ngModelChange)="applySourcePickerMetadata()" />
+            <div class="conf-track">
+              <div class="conf-fill" [style.width.%]="sourcePickerConfidence" [style.background]="getConfGradient()"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SQL Transformation -->
+        <div class="picker-section picker-section-grow">
+          <div class="picker-section-label">
+            Transformation
+            <span class="sql-badge">SQL</span>
+          </div>
+          <div class="sql-editor-wrap">
+            <div class="sql-gutter">
+              <span *ngFor="let ln of sqlLineNumbers()">{{ ln }}</span>
+            </div>
+            <div class="sql-body">
+              <pre class="sql-highlight" aria-hidden="true" [innerHTML]="highlightedSql()">&#10;</pre>
+              <textarea #sqlTextarea class="sql-textarea" spellcheck="false"
+                        [(ngModel)]="sourcePickerTransformation"
+                        (input)="onSqlInput()"
+                        (keydown)="onSqlKeydown($event)"
+                        (scroll)="syncSqlScroll($event)"
+                        placeholder="CAST(source_table.column AS type)"></textarea>
+              <div class="sql-autocomplete" *ngIf="sqlShowSuggestions">
+                <button *ngFor="let s of sqlSuggestions; let si = index"
+                        class="sql-ac-item"
+                        [class.active]="si === sqlSuggestionIdx"
+                        (mousedown)="applySqlSuggestion(s); $event.preventDefault()">
+                  <span class="sql-ac-icon" [class.kw]="isSqlKeyword(s)">{{ isSqlKeyword(s) ? 'K' : 'C' }}</span>
+                  {{ s }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
-<div *ngIf="showSourcePicker" style="position:fixed;inset:0;z-index:99" (click)="showSourcePicker = false"></div>
+<div class="picker-backdrop" *ngIf="showSourcePicker" (click)="closeSourcePicker()"></div>
 
 <!-- ── Rule editor modal ── -->
 <div class="rule-editor-overlay" *ngIf="showRuleEditor" (click)="showRuleEditor = false">

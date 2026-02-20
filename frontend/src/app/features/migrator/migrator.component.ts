@@ -1,6 +1,7 @@
 import { Component, ViewEncapsulation, NgZone, ElementRef, ViewChild, AfterViewInit, OnDestroy, OnInit, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { MappingApiService, type MappingResultDto, type MappingItemDto, type RawFileDto } from '../../core/services/mapping-api.service';
 import { FilePreviewComponent } from '../../shared/components/file-preview/file-preview.component';
 import { jsPDF } from 'jspdf';
@@ -112,6 +113,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   rules: RuleItem[] = [];
   rulesCollapsed = true;
   rulesDropdownOpen = false;
+  activeRuleIndex: number | null = null;
   showRuleEditor = false;
   ruleEditorName = '';
   ruleEditorContent = '';
@@ -125,6 +127,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   showExportMenu = false;
   showUnmappedOnly = false;
   unmappedCount = 0;
+  collapsedMappingGroups = new Set<string>();
 
   // Stream overlay
   showStreamOverlay = false;
@@ -133,8 +136,27 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   showSourcePicker = false;
   sourcePickerRowIdx = -1;
   sourcePickerOptions: string[] = [];
+  sourcePickerQuery = '';
+  sourcePickerMatchType = '';
+  sourcePickerConfidence = 0;
+  sourcePickerTransformation = '';
   pickerTop = 0;
   pickerLeft = 0;
+
+  // SQL autocomplete
+  sqlSuggestions: string[] = [];
+  sqlSuggestionIdx = -1;
+  sqlShowSuggestions = false;
+  private sqlKeywords = ['SELECT', 'FROM', 'WHERE', 'AS', 'CAST', 'COALESCE', 'CONCAT', 'TRIM', 'UPPER', 'LOWER', 'SUBSTRING', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'IN', 'LIKE', 'BETWEEN', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'ON', 'GROUP', 'BY', 'ORDER', 'HAVING', 'LIMIT', 'OFFSET', 'UNION', 'ALL', 'DISTINCT', 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'REPLACE', 'CONVERT', 'VARCHAR', 'INT', 'INTEGER', 'BIGINT', 'FLOAT', 'DOUBLE', 'DECIMAL', 'DATE', 'DATETIME', 'TIMESTAMP', 'STRING', 'BOOLEAN', 'TRUE', 'FALSE'];
+
+  matchTypes = [
+    { value: 'exact', label: 'Exact', color: '#16a34a' },
+    { value: 'semantic', label: 'Semantic', color: '#2563eb' },
+    { value: 'derived', label: 'Derived', color: '#9333ea' },
+    { value: 'transformed', label: 'Transformed', color: '#ca8a04' },
+    { value: 'manual', label: 'Manual', color: '#0891b2' },
+    { value: 'incompatible', label: 'Incompatible', color: '#dc2626' },
+  ];
 
   // Session toast
   sessionToast = '';
@@ -151,7 +173,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private cleanupFns: (() => void)[] = [];
 
-  constructor(private api: MappingApiService, private zone: NgZone, private cdr: ChangeDetectorRef) {}
+  constructor(private api: MappingApiService, private zone: NgZone, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer) {}
 
   ngOnInit(): void {
     this.loadSessionsList();
@@ -292,7 +314,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Mapping rows ──
   private buildMappingRows(): void {
-    if (!this.currentMapping) { this.mappingRows = []; this.unmappedCount = 0; return; }
+    if (!this.currentMapping) { this.mappingRows = []; this.unmappedCount = 0; this.collapsedMappingGroups.clear(); return; }
     const rows: MappingRow[] = this.currentMapping.mappings.map(m => ({
       ...m, _status: 'pending' as const, _original: { ...m }
     }));
@@ -305,6 +327,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     });
     this.mappingRows = rows;
     this.unmappedCount = unmappedTarget.length;
+    this.collapsedMappingGroups.clear();
   }
 
   isMapped(row: MappingRow): boolean { return row.source_columns.length > 0; }
@@ -342,7 +365,12 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.pickerTop = rect.bottom + 4;
     this.pickerLeft = rect.left;
     this.sourcePickerOptions = this.collectAllSourceColumns();
+    this.sourcePickerQuery = '';
     this.sourcePickerRowIdx = idx;
+    const row = this.mappingRows[idx];
+    this.sourcePickerMatchType = row?.match_type || '';
+    this.sourcePickerConfidence = Math.max(0, Math.min(100, this.confPercent(row?.confidence_score ?? 0)));
+    this.sourcePickerTransformation = row?.transformation_rule || '';
     this.showSourcePicker = true;
 
     setTimeout(() => {
@@ -363,14 +391,150 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   pickSource(col: string): void {
     if (this.sourcePickerRowIdx >= 0 && this.mappingRows[this.sourcePickerRowIdx]) {
       const row = this.mappingRows[this.sourcePickerRowIdx];
-      if (!row.source_columns.includes(col)) {
+      if (row.source_columns.includes(col)) {
+        row.source_columns = row.source_columns.filter(c => c !== col);
+      } else {
         row.source_columns = [...row.source_columns, col];
       }
-      row.match_type = row.match_type || 'semantic';
+
+      if (row.source_columns.length === 0) {
+        row.match_type = '';
+        row.confidence_score = 0;
+        row.reasoning = undefined;
+        row.transformation_rule = undefined;
+        this.sourcePickerMatchType = '';
+        this.sourcePickerConfidence = 0;
+        this.sourcePickerTransformation = '';
+      } else {
+        row.match_type = row.match_type || 'semantic';
+        if (!this.sourcePickerMatchType) this.sourcePickerMatchType = row.match_type;
+      }
       row._status = 'pending';
     }
-    this.showSourcePicker = false;
     this.unmappedCount = this.mappingRows.filter(r => !this.isMapped(r)).length;
+  }
+
+  closeSourcePicker(): void {
+    this.showSourcePicker = false;
+    this.sourcePickerQuery = '';
+    this.sqlShowSuggestions = false;
+  }
+
+  setMatchType(type: string): void {
+    this.sourcePickerMatchType = type;
+    this.applySourcePickerMetadata();
+  }
+
+  applySourcePickerMetadata(): void {
+    if (this.sourcePickerRowIdx < 0 || !this.mappingRows[this.sourcePickerRowIdx]) return;
+    const row = this.mappingRows[this.sourcePickerRowIdx];
+    const confidence = Number(this.sourcePickerConfidence);
+    const safeConfidence = Number.isFinite(confidence) ? Math.min(100, Math.max(0, confidence)) : 0;
+    this.sourcePickerConfidence = safeConfidence;
+
+    row.match_type = (this.sourcePickerMatchType || '').trim();
+    row.confidence_score = safeConfidence;
+    const tr = (this.sourcePickerTransformation || '').trim();
+    row.transformation_rule = tr || undefined;
+    row._status = 'pending';
+  }
+
+  getConfGradient(): string {
+    const c = this.sourcePickerConfidence;
+    if (c >= 80) return 'linear-gradient(90deg, #16a34a, #22c55e)';
+    if (c >= 50) return 'linear-gradient(90deg, #ca8a04, #eab308)';
+    return 'linear-gradient(90deg, #dc2626, #ef4444)';
+  }
+
+  highlightedSql(): SafeHtml {
+    const text = this.sourcePickerTransformation || '';
+    if (!text) return this.sanitizer.bypassSecurityTrustHtml('\n');
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const kwSet = new Set(this.sqlKeywords.map(k => k.toLowerCase()));
+    const colSet = new Set(this.sourcePickerOptions.map(c => c.toLowerCase()));
+
+    const html = esc(text)
+      .replace(/'[^']*'/g, (s) => `<span class="sql-str">${s}</span>`)
+      .replace(/\b[\w.]+\b/g, (word) => {
+        const low = word.toLowerCase();
+        if (kwSet.has(low)) return `<span class="sql-kw">${word}</span>`;
+        if (colSet.has(low) || colSet.has(low.replace(/^\w+\./, ''))) return `<span class="sql-col">${word}</span>`;
+        if (/^\d+(\.\d+)?$/.test(word)) return `<span class="sql-num">${word}</span>`;
+        return word;
+      }) + '\n';
+    return this.sanitizer.bypassSecurityTrustHtml(html);
+  }
+
+  onSqlInput(): void {
+    this.applySourcePickerMetadata();
+    const text = this.sourcePickerTransformation || '';
+    const wordMatch = text.match(/[\w.]+$/);
+    if (!wordMatch || wordMatch[0].length < 1) {
+      this.sqlShowSuggestions = false;
+      return;
+    }
+    const prefix = wordMatch[0].toLowerCase();
+    const cols = this.sourcePickerOptions
+      .filter(c => c.toLowerCase().startsWith(prefix) && c.toLowerCase() !== prefix);
+    const kws = this.sqlKeywords
+      .filter(k => k.toLowerCase().startsWith(prefix) && k.toLowerCase() !== prefix);
+    this.sqlSuggestions = [...cols, ...kws].slice(0, 14);
+    this.sqlSuggestionIdx = 0;
+    this.sqlShowSuggestions = this.sqlSuggestions.length > 0;
+  }
+
+  onSqlKeydown(event: KeyboardEvent): void {
+    if (!this.sqlShowSuggestions) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      this.sqlSuggestionIdx = Math.min(this.sqlSuggestionIdx + 1, this.sqlSuggestions.length - 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      this.sqlSuggestionIdx = Math.max(this.sqlSuggestionIdx - 1, 0);
+    } else if ((event.key === 'Enter' || event.key === 'Tab') && this.sqlSuggestionIdx >= 0) {
+      event.preventDefault();
+      this.applySqlSuggestion(this.sqlSuggestions[this.sqlSuggestionIdx]);
+    } else if (event.key === 'Escape') {
+      this.sqlShowSuggestions = false;
+    }
+  }
+
+  applySqlSuggestion(suggestion: string): void {
+    const text = this.sourcePickerTransformation || '';
+    const wordMatch = text.match(/[\w.]+$/);
+    if (wordMatch) {
+      this.sourcePickerTransformation = text.slice(0, text.length - wordMatch[0].length) + suggestion + ' ';
+    } else {
+      this.sourcePickerTransformation = text + suggestion + ' ';
+    }
+    this.sqlShowSuggestions = false;
+    this.applySourcePickerMetadata();
+  }
+
+  isSqlKeyword(s: string): boolean {
+    return this.sqlKeywords.includes(s.toUpperCase());
+  }
+
+  sqlLineNumbers(): number[] {
+    const text = this.sourcePickerTransformation || '';
+    const count = (text.match(/\n/g) || []).length + 1;
+    return Array.from({ length: count }, (_, i) => i + 1);
+  }
+
+  syncSqlScroll(event: Event): void {
+    const ta = event.target as HTMLTextAreaElement;
+    const wrap = ta.closest('.sql-editor-wrap');
+    if (!wrap) return;
+    const gutter = wrap.querySelector('.sql-gutter') as HTMLElement;
+    const pre = wrap.querySelector('.sql-highlight') as HTMLElement;
+    if (gutter) gutter.scrollTop = ta.scrollTop;
+    if (pre) { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; }
+  }
+
+  filteredSourcePickerOptions(): string[] {
+    const q = this.sourcePickerQuery.trim().toLowerCase();
+    if (!q) return this.sourcePickerOptions;
+    return this.sourcePickerOptions.filter(col => col.toLowerCase().includes(q));
   }
 
   private collectAllSourceColumns(): string[] {
@@ -437,6 +601,15 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.showUnmappedOnly = !this.showUnmappedOnly;
   }
 
+  toggleMappingGroup(table: string): void {
+    if (this.collapsedMappingGroups.has(table)) this.collapsedMappingGroups.delete(table);
+    else this.collapsedMappingGroups.add(table);
+  }
+
+  isMappingGroupCollapsed(table: string): boolean {
+    return this.collapsedMappingGroups.has(table);
+  }
+
   getConfColor(pct: number): string {
     if (pct >= 80) return 'var(--accent)';
     if (pct >= 50) return 'var(--yellow)';
@@ -470,10 +643,28 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   saveRule(): void {
     if (!this.ruleEditorContent.trim()) return;
     this.rules = [...this.rules, { name: this.ruleEditorName || 'Custom rule', content: this.ruleEditorContent }];
+    this.activeRuleIndex = this.rules.length - 1;
     this.showRuleEditor = false;
   }
 
-  removeRule(idx: number): void { this.rules = this.rules.filter((_, i) => i !== idx); }
+  removeRule(idx: number): void {
+    this.rules = this.rules.filter((_, i) => i !== idx);
+    if (this.activeRuleIndex === idx) this.activeRuleIndex = null;
+    else if (this.activeRuleIndex !== null && this.activeRuleIndex > idx) this.activeRuleIndex--;
+  }
+
+  toggleRulePreview(idx: number): void {
+    this.activeRuleIndex = this.activeRuleIndex === idx ? null : idx;
+  }
+
+  isRuleActive(idx: number): boolean {
+    return this.activeRuleIndex === idx;
+  }
+
+  activeRuleContent(): string {
+    if (this.activeRuleIndex === null) return '';
+    return this.rules[this.activeRuleIndex]?.content || '';
+  }
 
   // ── Session ──
   private loadSessionsList(): void {
@@ -625,12 +816,17 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
       const map: Record<string, string> = { exact: '#16a34a', semantic: '#2563eb', derived: '#9333ea', transformed: '#ca8a04', manual: '#0891b2', incompatible: '#dc2626' };
       return map[type] || '#6b7280';
     };
-    const gc = this.confPercent(this.currentMapping.global_confidence);
+    const liveMappedRows = this.mappingRows.filter(r => this.isMapped(r));
+    const liveUnmappedRows = this.mappingRows.filter(r => !this.isMapped(r));
+    const liveGlobalConfidence = liveMappedRows.length
+      ? (liveMappedRows.reduce((sum, r) => sum + this.confPercent(r.confidence_score), 0) / liveMappedRows.length)
+      : 0;
+    const gc = Math.round(liveGlobalConfidence);
     const gcCol = hexToRgb(pdfConfColor(gc));
     const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
     const timeStr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const totalMappings = this.currentMapping.mappings?.length ?? 0;
-    const totalUnmapped = (this.currentMapping.unmapped_source_columns?.length ?? 0) + (this.currentMapping.unmapped_target_columns?.length ?? 0);
+    const totalMappings = liveMappedRows.length;
+    const totalUnmapped = liveUnmappedRows.length;
 
     const addPageFooter = () => {
       doc.setFontSize(6);
@@ -713,7 +909,37 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     // ── Mapping tables ──
-    const groups = this.groupedMappings();
+    const exportGroupsMap = new Map<string, { row: MappingRow; idx: number }[]>();
+    this.mappingRows.forEach((row, idx) => {
+      const parts = row.target_column.split('.');
+      const table = parts.length > 1 ? parts.slice(0, -1).join('.') : 'Mappings';
+      if (!exportGroupsMap.has(table)) exportGroupsMap.set(table, []);
+      exportGroupsMap.get(table)!.push({ row, idx });
+    });
+    const groups = Array.from(exportGroupsMap.entries()).map(([table, allRows]) => {
+      const mappedItems = allRows.filter(r => this.isMapped(r.row));
+      const unmappedItems = allRows.filter(r => !this.isMapped(r.row));
+      const avgConf = mappedItems.length
+        ? mappedItems.reduce((s, r) => s + this.confPercent(r.row.confidence_score), 0) / mappedItems.length
+        : 0;
+      const srcTables = new Set<string>();
+      mappedItems.forEach(r => {
+        (r.row.source_columns || []).forEach(sc => {
+          const dot = sc.indexOf('.');
+          if (dot > 0) srcTables.add(sc.substring(0, dot));
+        });
+      });
+      return {
+        table,
+        rows: allRows,
+        mappedCount: mappedItems.length,
+        unmappedCount: unmappedItems.length,
+        totalCount: allRows.length,
+        avgConf: Math.round(avgConf),
+        confColor: this.getConfColor(avgConf),
+        sourceTables: [...srcTables],
+      };
+    });
 
     for (const group of groups) {
       if (y > H - 40) { addPageFooter(); doc.addPage(); y = 10; }
@@ -759,14 +985,14 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
       for (const item of group.rows) {
         const r = item.row;
         if (!this.isMapped(r)) {
-          tableBody.push(['—', '→', this.shortCol(r.target_column), '—', '—', '—', 'Unmapped']);
+          tableBody.push(['—', '>', this.shortCol(r.target_column), '—', '—', '—', 'Unmapped']);
         } else {
           const src = (r.source_columns || []).join(', ') || '—';
           const pct = this.confPercent(r.confidence_score);
           const mt = r.match_type || 'semantic';
           const transform = r.transformation_rule || '';
           const status = r._status === 'validated' ? 'Validated' : 'Pending';
-          tableBody.push([src, '→', this.shortCol(r.target_column), mt, `${pct.toFixed(0)}%`, transform || 'direct', status]);
+          tableBody.push([src, '>', this.shortCol(r.target_column), mt, `${pct.toFixed(0)}%`, transform || 'direct', status]);
 
           const reasoning = (r.reasoning || '').trim();
           if (reasoning) {
@@ -776,7 +1002,17 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
             const maxReasonW = W - 2 * mx - 10;
             const wrappedLines = doc.splitTextToSize(`${reasoning}`, maxReasonW);
             const wrappedText = wrappedLines.slice(0, 3).join('\n');
-            tableBody.push([{ content: wrappedText, colSpan: 7 } as any]);
+            tableBody.push([{
+              content: wrappedText,
+              colSpan: 7,
+              styles: {
+                font: 'helvetica',
+                fontStyle: 'normal',
+                fontSize: 7,
+                textColor: [100, 116, 139],
+                overflow: 'linebreak',
+              },
+            } as any]);
           }
         }
       }
@@ -892,7 +1128,10 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
     // ── Unmapped columns section ──
     const uSrc = this.currentMapping.unmapped_source_columns || [];
-    const uTgt = this.currentMapping.unmapped_target_columns || [];
+    const dynamicUnmappedTargets = this.mappingRows
+      .filter(r => !this.isMapped(r))
+      .map(r => r.target_column);
+    const uTgt = Array.from(new Set([...(this.currentMapping.unmapped_target_columns || []), ...dynamicUnmappedTargets]));
     if (uSrc.length > 0 || uTgt.length > 0) {
       if (y > H - 30) { addPageFooter(); doc.addPage(); y = 10; }
       const boxH = 8 + (uSrc.length ? 5 : 0) + (uTgt.length ? 5 : 0);
