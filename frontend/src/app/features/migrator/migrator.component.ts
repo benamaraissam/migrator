@@ -3,6 +3,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { MappingApiService, type MappingResultDto, type MappingItemDto, type RawFileDto } from '../../core/services/mapping-api.service';
+import { SessionApiService, type SessionListItem, type SessionDetail, type SharedWithItem } from '../../core/services/session-api.service';
+import { AuthService } from '../../core/auth/auth.service';
 import { FilePreviewComponent } from '../../shared/components/file-preview/file-preview.component';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -14,12 +16,7 @@ interface MappingRow extends MappingItemDto {
   _original?: MappingItemDto;
 }
 
-interface SessionSnapshot {
-  id: string; name: string; date: string;
-  sourceFiles: RawFileDto[]; targetFiles: RawFileDto[];
-  chatHistory: ChatMsg[]; currentMapping: MappingResultDto | null;
-  rules: RuleItem[];
-}
+const OPENED_SHARED_SESSION_IDS_KEY = 'migrator_opened_shared_session_ids';
 
 const EXAMPLE_SOURCE_FILES: RawFileDto[] = [
   {
@@ -112,15 +109,31 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Rules
   rules: RuleItem[] = [];
   rulesCollapsed = true;
+  sessionCollapsed = false;
   rulesDropdownOpen = false;
-  activeRuleIndex: number | null = null;
+  /** When set, the rule editor is in "edit" mode for this index; when null, it's "add new". */
+  editingRuleIndex: number | null = null;
   showRuleEditor = false;
   ruleEditorName = '';
   ruleEditorContent = '';
 
   // Session
   showSessionPicker = false;
-  savedSessions: SessionSnapshot[] = [];
+  savedSessions: SessionListItem[] = [];
+  /** IDs of shared sessions the user has opened (load); used to show/hide unread badge. Persisted in localStorage. */
+  openedSharedSessionIds = new Set<string>();
+  currentSessionId: string | null = null;
+  currentSessionName = '';
+  currentSessionMeta: { is_owner: boolean; owner_user_id?: string; owner_display_name?: string; shared_with: SharedWithItem[] } | null = null;
+  shareUserInput = '';
+  shareRole: 'viewer' | 'editor' = 'viewer';
+  suggestedUsers: { user_id: string; display_name?: string }[] = [];
+  showShareSuggestions = false;
+  shareInputReadonly = true;
+  /** Display name of the user currently selected in the share input (so we can show it in the list after Add). */
+  selectedShareDisplayName: string | null = null;
+  /** user_id that had selectedShareDisplayName (so we only use the name when input still matches). */
+  selectedShareUserId: string | null = null;
 
   // Mapping controls
   mappingState: 'normal' | 'minimized' | 'maximized' = 'normal';
@@ -173,9 +186,23 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private cleanupFns: (() => void)[] = [];
 
-  constructor(private api: MappingApiService, private zone: NgZone, private cdr: ChangeDetectorRef, private sanitizer: DomSanitizer) {}
+  constructor(
+    private api: MappingApiService,
+    private sessionApi: SessionApiService,
+    public auth: AuthService,
+    private zone: NgZone,
+    private cdr: ChangeDetectorRef,
+    private sanitizer: DomSanitizer
+  ) {}
 
   ngOnInit(): void {
+    try {
+      const raw = localStorage.getItem(OPENED_SHARED_SESSION_IDS_KEY);
+      if (raw) {
+        const ids: string[] = JSON.parse(raw);
+        if (Array.isArray(ids)) this.openedSharedSessionIds = new Set(ids);
+      }
+    } catch (_) { /* ignore */ }
     this.loadSessionsList();
   }
 
@@ -618,6 +645,7 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Rules ──
   toggleRules(): void { this.rulesCollapsed = !this.rulesCollapsed; }
+  toggleSession(): void { this.sessionCollapsed = !this.sessionCollapsed; }
   toggleRulesDropdown(e: Event): void { e.stopPropagation(); this.rulesDropdownOpen = !this.rulesDropdownOpen; }
 
   addRuleFromFile(input: HTMLInputElement): void {
@@ -633,64 +661,98 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.rulesDropdownOpen = false;
   }
 
-  openRuleEditor(): void {
-    this.ruleEditorName = '';
-    this.ruleEditorContent = '';
+  openRuleEditor(index?: number): void {
+    if (index !== undefined && this.rules[index]) {
+      this.editingRuleIndex = index;
+      this.ruleEditorName = this.rules[index].name;
+      this.ruleEditorContent = this.rules[index].content;
+    } else {
+      this.editingRuleIndex = null;
+      this.ruleEditorName = '';
+      this.ruleEditorContent = '';
+    }
     this.showRuleEditor = true;
     this.rulesDropdownOpen = false;
   }
 
+  closeRuleEditor(): void {
+    this.showRuleEditor = false;
+    this.editingRuleIndex = null;
+    this.ruleEditorName = '';
+    this.ruleEditorContent = '';
+  }
+
   saveRule(): void {
     if (!this.ruleEditorContent.trim()) return;
-    this.rules = [...this.rules, { name: this.ruleEditorName || 'Custom rule', content: this.ruleEditorContent }];
-    this.activeRuleIndex = this.rules.length - 1;
-    this.showRuleEditor = false;
+    const name = this.ruleEditorName?.trim() || 'Custom rule';
+    const content = this.ruleEditorContent;
+    if (this.editingRuleIndex !== null) {
+      this.rules = this.rules.map((r, i) =>
+        i === this.editingRuleIndex! ? { name, content } : r
+      );
+    } else {
+      this.rules = [...this.rules, { name, content }];
+    }
+    this.closeRuleEditor();
   }
 
   removeRule(idx: number): void {
     this.rules = this.rules.filter((_, i) => i !== idx);
-    if (this.activeRuleIndex === idx) this.activeRuleIndex = null;
-    else if (this.activeRuleIndex !== null && this.activeRuleIndex > idx) this.activeRuleIndex--;
-  }
-
-  toggleRulePreview(idx: number): void {
-    this.activeRuleIndex = this.activeRuleIndex === idx ? null : idx;
-  }
-
-  isRuleActive(idx: number): boolean {
-    return this.activeRuleIndex === idx;
-  }
-
-  activeRuleContent(): string {
-    if (this.activeRuleIndex === null) return '';
-    return this.rules[this.activeRuleIndex]?.content || '';
   }
 
   // ── Session ──
   private loadSessionsList(): void {
-    try {
-      const raw = localStorage.getItem('migrator_sessions');
-      this.savedSessions = raw ? JSON.parse(raw) : [];
-    } catch { this.savedSessions = []; }
+    this.sessionApi.list().subscribe({
+      next: (list) => {
+        this.savedSessions = list;
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        this.savedSessions = [];
+        this.errorMessage = err?.error?.error || err?.message || 'Failed to load sessions.';
+        this.cdr.detectChanges();
+      }
+    });
   }
 
   saveSession(): void {
-    const snap: SessionSnapshot = {
-      id: Date.now().toString(36),
-      name: `Session ${new Date().toLocaleString()}`,
-      date: new Date().toISOString(),
-      sourceFiles: this.sourceFiles,
-      targetFiles: this.targetFiles,
-      chatHistory: this.chatHistory,
-      currentMapping: this.currentMapping,
+    const name = this.currentSessionName?.trim() || (this.currentSessionId ? 'Session' : `Session ${new Date().toLocaleString()}`);
+    const dto = {
+      name,
+      source_files: this.sourceFiles,
+      target_files: this.targetFiles,
+      chat_history: this.chatHistory,
+      current_mapping: this.currentMapping,
       rules: this.rules
     };
-    this.savedSessions = [snap, ...this.savedSessions.slice(0, 19)];
-    try {
-      localStorage.setItem('migrator_sessions', JSON.stringify(this.savedSessions));
-      this.showSessionToast('Session saved');
-    } catch {
-      this.errorMessage = 'Failed to save session — storage may be full.';
+    if (this.currentSessionId) {
+      this.sessionApi.update(this.currentSessionId, dto).subscribe({
+        next: (updated) => {
+          this.currentSessionName = updated.name;
+          this.loadSessionsList();
+          this.showSessionToast('Session saved');
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          this.errorMessage = err?.error?.error || err?.message || 'Failed to save session.';
+          this.cdr.detectChanges();
+        }
+      });
+    } else {
+      this.sessionApi.create(dto).subscribe({
+        next: (created) => {
+          this.currentSessionId = created.id;
+          this.currentSessionName = created.name;
+          this.currentSessionMeta = { is_owner: true, shared_with: [] };
+          this.loadSessionsList();
+          this.showSessionToast('Session saved');
+          this.cdr.detectChanges();
+        },
+        error: (err) => {
+          this.errorMessage = err?.error?.error || err?.message || 'Failed to save session.';
+          this.cdr.detectChanges();
+        }
+      });
     }
   }
 
@@ -706,24 +768,63 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.showSessionPicker = true;
   }
 
-  loadSession(snap: SessionSnapshot): void {
-    this.sourceFiles = snap.sourceFiles;
-    this.targetFiles = snap.targetFiles;
-    this.chatHistory = snap.chatHistory;
-    this.currentMapping = snap.currentMapping;
-    this.rules = snap.rules || [];
-    this.selectedSourceFile = this.sourceFiles[0] || null;
-    this.selectedTargetFile = this.targetFiles[0] || null;
-    this.buildMappingRows();
-    this.showSessionPicker = false;
+  /** Number of shared sessions the user has not opened yet; shown as badge on Load session button. */
+  get unreadSharedCount(): number {
+    return this.savedSessions.filter(s => !s.is_owner && !this.openedSharedSessionIds.has(s.id)).length;
   }
 
-  deleteSession(snap: SessionSnapshot): void {
-    this.savedSessions = this.savedSessions.filter(s => s.id !== snap.id);
-    localStorage.setItem('migrator_sessions', JSON.stringify(this.savedSessions));
+  loadSession(item: SessionListItem): void {
+    this.sessionApi.get(item.id).subscribe({
+      next: (detail) => {
+        this.sourceFiles = detail.source_files ?? [];
+        this.targetFiles = detail.target_files ?? [];
+        this.chatHistory = (detail.chat_history ?? []).map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+        this.currentMapping = detail.current_mapping ?? null;
+        this.rules = (detail.rules ?? []).map(r => ({ name: r.name, content: r.content }));
+        this.selectedSourceFile = this.sourceFiles[0] || null;
+        this.selectedTargetFile = this.targetFiles[0] || null;
+        this.buildMappingRows();
+        this.currentSessionId = item.id;
+        this.currentSessionName = detail.name ?? '';
+        this.currentSessionMeta = { is_owner: detail.is_owner ?? true, owner_user_id: detail.owner_user_id, owner_display_name: detail.owner_display_name, shared_with: detail.shared_with ?? [] };
+        this.showSessionPicker = false;
+        if (!item.is_owner) {
+          this.openedSharedSessionIds.add(item.id);
+          try {
+            localStorage.setItem(OPENED_SHARED_SESSION_IDS_KEY, JSON.stringify([...this.openedSharedSessionIds]));
+          } catch (_) { /* ignore */ }
+        }
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        this.errorMessage = err?.error?.error || err?.message || 'Failed to load session.';
+        this.cdr.detectChanges();
+      }
+    });
+  }
+
+  deleteSession(item: SessionListItem): void {
+    this.sessionApi.delete(item.id).subscribe({
+      next: () => {
+        this.savedSessions = this.savedSessions.filter(s => s.id !== item.id);
+        if (this.currentSessionId === item.id) {
+          this.currentSessionId = null;
+          this.currentSessionName = '';
+          this.currentSessionMeta = null;
+        }
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        this.errorMessage = err?.error?.error || err?.message || 'Failed to delete session.';
+        this.cdr.detectChanges();
+      }
+    });
   }
 
   clearSession(): void {
+    this.currentSessionId = null;
+    this.currentSessionName = '';
+    this.currentSessionMeta = null;
     this.sourceFiles = [];
     this.targetFiles = [];
     this.chatHistory = [];
@@ -735,6 +836,92 @@ export class MigratorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.streamLog = [];
     this.streamTokens = '';
     this.errorMessage = '';
+  }
+
+  addShare(): void {
+    const id = this.currentSessionId;
+    /** Use resolved user_id: from selection (dropdown) or typed input. */
+    const userId = this.selectedShareUserId ?? this.shareUserInput?.trim();
+    if (!id || !userId) return;
+    const displayName = (userId === this.selectedShareUserId ? this.selectedShareDisplayName : null)
+      ?? this.suggestedUsers.find(u => u.user_id === userId)?.display_name
+      ?? undefined;
+    const displayNames = displayName ? { [userId]: displayName } : undefined;
+    this.sessionApi.shareSession(id, [userId], this.shareRole, displayNames).subscribe({
+      next: () => {
+        this.shareUserInput = '';
+        this.showShareSuggestions = false;
+        this.suggestedUsers = [];
+        this.selectedShareDisplayName = null;
+        this.selectedShareUserId = null;
+        if (this.currentSessionMeta) {
+          this.currentSessionMeta.shared_with = [...this.currentSessionMeta.shared_with, { user_id: userId, display_name: displayName ?? undefined, role: this.shareRole, shared_at: new Date().toISOString() }];
+        }
+        this.loadSessionsList();
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        this.errorMessage = err?.error?.error || err?.message || 'Failed to share.';
+        this.cdr.detectChanges();
+      }
+    });
+  }
+
+  loadShareSuggestions(): void {
+    const q = this.shareUserInput?.trim() || undefined;
+    if (q !== this.selectedShareDisplayName?.trim() && q !== this.selectedShareUserId) {
+      this.selectedShareUserId = null;
+      this.selectedShareDisplayName = null;
+    }
+    this.sessionApi.getSuggestedUsers(q).subscribe({
+      next: (res) => {
+        const myOid = this.auth.currentUser?.oid ?? '';
+        const alreadyShared = new Set((this.currentSessionMeta?.shared_with ?? []).map(s => s.user_id));
+        this.suggestedUsers = (res.users ?? []).filter(u => u.user_id !== myOid && !alreadyShared.has(u.user_id));
+        this.showShareSuggestions = this.suggestedUsers.length > 0;
+        this.cdr.detectChanges();
+      },
+      error: () => { this.suggestedUsers = []; this.showShareSuggestions = false; this.cdr.detectChanges(); }
+    });
+  }
+
+  selectShareSuggestion(user: { user_id: string; display_name?: string }): void {
+    this.shareUserInput = (user.display_name?.trim()) ? user.display_name.trim() : user.user_id;
+    this.selectedShareUserId = user.user_id;
+    this.selectedShareDisplayName = user.display_name ?? null;
+    this.showShareSuggestions = false;
+    this.suggestedUsers = [];
+    this.cdr.detectChanges();
+  }
+
+  onShareInputBlur(): void {
+    this.shareInputReadonly = true;
+    setTimeout(() => { this.showShareSuggestions = false; this.suggestedUsers = []; this.cdr.detectChanges(); }, 150);
+  }
+
+  /** Show display name, or a short user id when name is missing (e.g. "User 8b7d3ab1"). */
+  formatUserDisplay(userId: string, displayName?: string | null): string {
+    if (displayName?.trim()) return displayName.trim();
+    if (!userId) return userId;
+    return userId.length > 12 ? `User ${userId.slice(0, 8)}…` : userId;
+  }
+
+  removeShare(userId: string): void {
+    const id = this.currentSessionId;
+    if (!id) return;
+    this.sessionApi.unshareSession(id, userId).subscribe({
+      next: () => {
+        if (this.currentSessionMeta) {
+          this.currentSessionMeta.shared_with = this.currentSessionMeta.shared_with.filter(s => s.user_id !== userId);
+        }
+        this.loadSessionsList();
+        this.cdr.detectChanges();
+      },
+      error: (err) => {
+        this.errorMessage = err?.error?.error || err?.message || 'Failed to remove share.';
+        this.cdr.detectChanges();
+      }
+    });
   }
 
   // ── Mapping panel controls ──

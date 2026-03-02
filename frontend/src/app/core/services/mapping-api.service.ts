@@ -1,7 +1,10 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError } from 'rxjs';
+import { Observable, from, of } from 'rxjs';
+import { switchMap, catchError } from 'rxjs/operators';
 import { environment } from '../../../environments/environment';
+import { MsalService } from '@azure/msal-angular';
+import { getApiScopes } from '../auth/msal-config';
 
 export interface RawFileDto {
   fileName: string;
@@ -49,6 +52,7 @@ export interface RefineMappingResponse {
 @Injectable({ providedIn: 'root' })
 export class MappingApiService {
   private readonly baseUrl = environment.apiUrl;
+  private readonly msal = inject(MsalService, { optional: true });
 
   constructor(private http: HttpClient) {}
 
@@ -58,20 +62,47 @@ export class MappingApiService {
     onToken: (token: string) => void,
     onXhr?: (xhr: XMLHttpRequest) => void
   ): Observable<MappingResultDto> {
-    return new Observable((subscriber) => {
-      const body = JSON.stringify(request);
-      const xhr = new XMLHttpRequest();
-      if (onXhr) onXhr(xhr);
-      let buffer = '';
-      let eventType = '';
-      let gotResult = false;
-      let pendingData = '';
+    const scopes = getApiScopes();
+    const account = this.msal?.instance?.getAllAccounts()?.[0];
 
-      console.log('[SSE] Starting map-schema-stream request');
+    console.log('[SSE] scopes:', scopes, '| account:', account?.username ?? 'none');
 
-      xhr.open('POST', `${this.baseUrl}/api/map-schema-stream`);
-      xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.onreadystatechange = () => {
+    const tokenPromise: Promise<string | null> =
+      scopes.length && account && this.msal
+        ? this.msal.instance
+            .acquireTokenSilent({ scopes, account })
+            .then((res) => {
+              console.log('[SSE] acquireTokenSilent OK, accessToken length:', res?.accessToken?.length);
+              return res?.accessToken ?? null;
+            })
+            .catch((err) => {
+              console.error('[SSE] acquireTokenSilent FAILED:', err);
+              return null;
+            })
+        : Promise.resolve(null);
+
+    return from(tokenPromise).pipe(
+      switchMap((token) => {
+        console.log('[SSE] Token for XHR:', token ? `OK (${token.slice(0, 20)}…)` : 'NULL — expect 401');
+        return new Observable<MappingResultDto>((subscriber) => {
+          const body = JSON.stringify(request);
+          const xhr = new XMLHttpRequest();
+          if (onXhr) onXhr(xhr);
+          let buffer = '';
+          let eventType = '';
+          let gotResult = false;
+          let pendingData = '';
+
+          console.log('[SSE] Starting map-schema-stream request');
+
+          xhr.open('POST', `${this.baseUrl}/api/map-schema-stream`);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+          xhr.withCredentials = true;
+
+          xhr.onreadystatechange = () => {
         if (xhr.readyState !== 3 && xhr.readyState !== 4) return;
 
         const text = xhr.responseText;
@@ -162,7 +193,9 @@ export class MappingApiService {
       };
 
       xhr.send(body);
-    });
+        });
+      })
+    );
   }
 
   refineMapping(request: RefineMappingRequest): Observable<RefineMappingResponse> {

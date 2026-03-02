@@ -1,15 +1,15 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Domain", "Migrator.Domain\Migrator.Domain.csproj", "{26853057-B4FA-46A8-85BC-1409B0861045}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Domain", "src\Migrator.Domain\Migrator.Domain.csproj", "{26853057-B4FA-46A8-85BC-1409B0861045}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Application", "Migrator.Application\Migrator.Application.csproj", "{0E8AF9C6-1F5D-4959-8796-C4C31A17723B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Application", "src\Migrator.Application\Migrator.Application.csproj", "{0E8AF9C6-1F5D-4959-8796-C4C31A17723B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Infrastructure", "Migrator.Infrastructure\Migrator.Infrastructure.csproj", "{42056356-E4FB-4E65-8638-EFB6E081AFF3}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.Infrastructure", "src\Migrator.Infrastructure\Migrator.Infrastructure.csproj", "{42056356-E4FB-4E65-8638-EFB6E081AFF3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.API", "Migrator.API\Migrator.API.csproj", "{99F83945-E6FB-4313-8117-DD1944DBE28D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Migrator.API", "src\Migrator.API\Migrator.API.csproj", "{99F83945-E6FB-4313-8117-DD1944DBE28D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

@@ -10,10 +10,90 @@
         </button>
         <button type="button" class="session-btn" title="Load session" (click)="openSessionPicker()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 002-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+          <span class="session-load-badge" *ngIf="unreadSharedCount > 0">+{{ unreadSharedCount }}</span>
         </button>
         <button type="button" class="session-btn session-clear-btn" title="New session" (click)="clearSession()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
         </button>
+      </div>
+    </div>
+
+    <!-- Auth: Sign in / User + Sign out -->
+    <div class="auth-block" *ngIf="auth.isAuthEnabled">
+      <ng-container *ngIf="!auth.isLoggedIn">
+        <button type="button" class="auth-sign-in-btn" (click)="auth.login()" title="Sign in with Microsoft">
+          <svg class="auth-ms-icon" viewBox="0 0 23 23" width="18" height="18" fill="currentColor">
+            <path fill="#f35325" d="M1 1h10v10H1z"/>
+            <path fill="#81bc06" d="M12 1h10v10H12z"/>
+            <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+            <path fill="#ffba08" d="M12 12h10v10H12z"/>
+          </svg>
+          <span>Sign in with Microsoft</span>
+        </button>
+      </ng-container>
+      <div class="auth-user-card" *ngIf="auth.isLoggedIn">
+        <div class="auth-avatar" [title]="auth.currentUser?.name || auth.currentUser?.email">
+          {{ (auth.currentUser?.name || auth.currentUser?.email || '?').charAt(0).toUpperCase() }}
+        </div>
+        <div class="auth-user-info">
+          <span class="auth-user-name">{{ auth.currentUser?.name || 'Signed in' }}</span>
+          <span class="auth-user-email" *ngIf="auth.currentUser?.email">{{ auth.currentUser?.email }}</span>
+        </div>
+        <button type="button" class="auth-sign-out-btn" (click)="auth.logout()" title="Sign out">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          <span>Sign out</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Session info (when a session is loaded) -->
+    <div class="session-info-section" *ngIf="currentSessionId" [class.collapsed]="sessionCollapsed">
+      <div class="session-info-header" (click)="toggleSession()">
+        <svg class="session-info-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        <span>Session</span>
+      </div>
+      <div class="session-info-body">
+      <div class="session-info-name">
+        <input type="text" class="session-name-input" [(ngModel)]="currentSessionName" (blur)="saveSession()" placeholder="Session name" title="Edit name and save" />
+      </div>
+      <div class="session-info-meta">
+        <span class="session-info-badge" [class.owner]="currentSessionMeta?.is_owner" [class.shared]="!currentSessionMeta?.is_owner">{{ currentSessionMeta?.is_owner ? 'Mine' : 'Shared with me' }}</span>
+        <span class="session-info-shared-by" *ngIf="currentSessionMeta && !currentSessionMeta.is_owner && currentSessionMeta.owner_user_id">
+          Shared by: {{ (currentSessionMeta.owner_display_name && currentSessionMeta.owner_display_name.trim()) || 'Another user' }}
+        </span>
+      </div>
+      <div class="session-info-share" *ngIf="currentSessionMeta?.is_owner">
+        <div class="session-info-label">Share with</div>
+        <div class="session-share-list" *ngIf="(currentSessionMeta?.shared_with?.length ?? 0) > 0">
+          <div class="session-share-item" *ngFor="let s of (currentSessionMeta?.shared_with ?? [])">
+            <span class="session-share-user" [title]="s.user_id">{{ formatUserDisplay(s.user_id, s.display_name) }}</span>
+            <span class="session-share-role">{{ s.role }}</span>
+            <button type="button" class="session-share-remove" (click)="removeShare(s.user_id)" title="Remove">×</button>
+          </div>
+        </div>
+        <div class="session-share-add">
+          <div class="session-share-input-wrap" role="group">
+            <input type="text" class="session-share-input" [(ngModel)]="shareUserInput" placeholder="Name or user ID"
+              autocomplete="one-time-code"
+              name="share-user-picker"
+              [attr.readonly]="shareInputReadonly ? true : null"
+              (focus)="shareInputReadonly = false; loadShareSuggestions(); showShareSuggestions = true"
+              (blur)="onShareInputBlur()"
+              (ngModelChange)="loadShareSuggestions()"
+              (keydown.enter)="addShare(); $event.preventDefault()" />
+            <div class="session-share-suggestions" *ngIf="showShareSuggestions && suggestedUsers.length" (mousedown)="$event.preventDefault()">
+              <button type="button" class="session-share-suggestion-item" *ngFor="let u of suggestedUsers" (click)="selectShareSuggestion(u)">
+                {{ formatUserDisplay(u.user_id, u.display_name) }}
+              </button>
+            </div>
+          </div>
+          <select class="session-share-role-select" [(ngModel)]="shareRole">
+            <option value="viewer">Viewer</option>
+            <option value="editor">Editor</option>
+          </select>
+          <button type="button" class="btn-sm session-share-btn" (click)="addShare()" [disabled]="!(shareUserInput && shareUserInput.trim())">Add</button>
+        </div>
+      </div>
       </div>
     </div>
 
@@ -44,14 +124,11 @@
       <div class="rules-body">
         <div class="rules-list">
           <div class="rules-empty" *ngIf="rules.length === 0">Add rules from file or write them directly</div>
-          <div *ngFor="let r of rules; let i = index" class="rule-item" [class.active]="isRuleActive(i)" (click)="toggleRulePreview(i)">
+          <div *ngFor="let r of rules; let i = index" class="rule-item" (click)="openRuleEditor(i)">
             <svg class="rule-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
             <span class="rule-name">{{ r.name }}</span>
             <button type="button" class="rule-remove" title="Remove" (click)="removeRule(i); $event.stopPropagation()">×</button>
           </div>
-        </div>
-        <div class="rules-preview" [class.visible]="activeRuleIndex !== null">
-          <ng-container *ngIf="activeRuleIndex !== null">{{ activeRuleContent() }}</ng-container>
         </div>
       </div>
     </div>
@@ -443,11 +520,11 @@
 <div class="picker-backdrop" *ngIf="showSourcePicker" (click)="closeSourcePicker()"></div>
 
 <!-- ── Rule editor modal ── -->
-<div class="rule-editor-overlay" *ngIf="showRuleEditor" (click)="showRuleEditor = false">
+<div class="rule-editor-overlay" *ngIf="showRuleEditor" (click)="closeRuleEditor()">
   <div class="rule-editor-panel" (click)="$event.stopPropagation()">
     <div class="rule-editor-header">
-      <span class="rule-editor-title">Add Rule</span>
-      <button type="button" class="ctrl-btn" (click)="showRuleEditor = false">×</button>
+      <span class="rule-editor-title">{{ editingRuleIndex !== null ? 'Edit Rule' : 'Add Rule' }}</span>
+      <button type="button" class="ctrl-btn" (click)="closeRuleEditor()">×</button>
     </div>
     <div class="rule-editor-body">
       <div class="rule-editor-field">
@@ -460,7 +537,7 @@
       </div>
     </div>
     <div class="rule-editor-footer">
-      <button type="button" class="btn-sm btn-ghost" (click)="showRuleEditor = false">Cancel</button>
+      <button type="button" class="btn-sm btn-ghost" (click)="closeRuleEditor()">Cancel</button>
       <button type="button" class="btn-sm" (click)="saveRule()">Save</button>
     </div>
   </div>
@@ -474,13 +551,17 @@
       <button type="button" class="ctrl-btn" (click)="showSessionPicker = false">×</button>
     </div>
     <div class="session-picker-body">
-      <div class="session-picker-empty" *ngIf="savedSessions.length === 0">No saved sessions</div>
+      <div class="session-picker-empty" *ngIf="savedSessions.length === 0">No saved sessions. Save your current work to create one.</div>
       <div *ngFor="let s of savedSessions" class="session-picker-item" (click)="loadSession(s)">
         <div class="session-picker-info">
-          <span class="session-picker-name">{{ s.name }}</span>
-          <span class="session-picker-meta">{{ s.sourceFiles.length }} source, {{ s.targetFiles.length }} target files</span>
+          <span class="session-picker-name">{{ s.name || 'Unnamed session' }}</span>
+          <span class="session-picker-meta">
+            <span class="session-picker-badge" [class.badge-owner]="s.is_owner" [class.badge-shared]="!s.is_owner">{{ s.is_owner ? 'Mine' : 'Shared' }}</span>
+            <span class="session-picker-by" *ngIf="!s.is_owner && s.owner_user_id">by {{ (s.owner_display_name && s.owner_display_name.trim()) || 'Another user' }}</span>
+            {{ s.updated_at | date:'short' }}
+          </span>
         </div>
-        <button class="session-picker-delete" (click)="deleteSession(s); $event.stopPropagation()" title="Delete">
+        <button class="session-picker-delete" *ngIf="s.is_owner" (click)="deleteSession(s); $event.stopPropagation()" title="Delete">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
         </button>
       </div>

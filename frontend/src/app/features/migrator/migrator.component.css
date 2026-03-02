@@ -2,3 +2,287 @@
   display: block;
   height: 100%;
 }
+
+/* ── Session controls: Load button badge for unread shared sessions ── */
+.session-controls .session-btn {
+  position: relative;
+}
+.session-load-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  color: #fff;
+  background: var(--blue, #3b82f6);
+  border-radius: 7px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* ── Auth block: Sign in / User card + Sign out ── */
+.auth-block {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface2) 0%, var(--surface) 100%);
+}
+
+.auth-sign-in-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #2f2f2f 0%, #1a1a1a 100%);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.auth-sign-in-btn:hover {
+  background: linear-gradient(135deg, #3b3b3b 0%, #252525 100%);
+  border-color: var(--muted);
+  color: var(--text);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.auth-sign-in-btn:active {
+  transform: translateY(0);
+}
+
+.auth-ms-icon {
+  flex-shrink: 0;
+}
+
+.auth-user-card {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.auth-user-card:hover {
+  border-color: var(--border2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.auth-avatar {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+  background: linear-gradient(145deg, var(--accent) 0%, var(--accent-dim) 100%);
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(34, 197, 94, 0.25);
+}
+
+.auth-user-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.auth-user-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auth-user-email {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auth-sign-out-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.auth-sign-out-btn:hover {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.auth-sign-out-btn svg {
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+/* ── Session info (when session loaded) ── */
+.session-info-section {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.session-info-section.collapsed .session-info-chevron {
+  transform: rotate(-90deg);
+}
+
+.session-info-section.collapsed .session-info-body {
+  display: none;
+}
+
+.session-info-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.session-info-header:hover {
+  color: var(--text2);
+}
+
+.session-info-chevron {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.session-info-body {
+  margin-top: 0;
+}
+
+.session-name-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 0.4rem 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+}
+
+.session-name-input:focus {
+  border-color: var(--accent);
+}
+
+.session-info-meta { margin-top: 0.4rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+
+.session-info-shared-by {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.session-info-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.session-info-badge.owner { background: var(--accent-bg); color: var(--accent); }
+.session-info-badge.shared { background: rgba(59, 130, 246, 0.12); color: var(--blue); }
+
+.session-info-share { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+.session-info-label { font-size: 0.7rem; font-weight: 600; color: var(--muted); margin-bottom: 0.35rem; }
+.session-share-list { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.5rem; }
+.session-share-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.4rem;
+  background: var(--surface);
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.session-share-user { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); }
+.session-share-role { font-size: 0.68rem; color: var(--muted); text-transform: uppercase; }
+.session-share-remove {
+  width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: var(--muted);
+  cursor: pointer; border-radius: 3px; font-size: 1rem; line-height: 1; display: flex; align-items: center; justify-content: center;
+}
+.session-share-remove:hover { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+.session-share-add { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+.session-share-input {
+  flex: 1; min-width: 80px;
+  font-family: inherit; font-size: 0.78rem; padding: 0.35rem 0.5rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 5px; color: var(--text); outline: none;
+}
+.session-share-input:focus { border-color: var(--accent); }
+
+.session-share-input-wrap { position: relative; flex: 1; min-width: 80px; }
+.session-share-input-wrap .session-share-input { width: 100%; box-sizing: border-box; }
+.session-share-suggestions {
+  position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px;
+  max-height: 180px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25); z-index: 50;
+}
+.session-share-suggestion-item {
+  display: block; width: 100%; padding: 0.4rem 0.6rem; text-align: left;
+  font-family: inherit; font-size: 0.78rem; background: none; border: none; color: var(--text2);
+  cursor: pointer; transition: background 0.1s; border-bottom: 1px solid var(--border);
+}
+.session-share-suggestion-item:last-child { border-bottom: none; }
+.session-share-suggestion-item:hover { background: var(--accent-bg); color: var(--accent); }
+.session-share-role-select {
+  font-family: inherit; font-size: 0.75rem; padding: 0.35rem 0.5rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 5px; color: var(--text); cursor: pointer;
+}
+.session-share-btn { flex-shrink: 0; }
+
+.session-picker-badge {
+  display: inline-block; font-size: 0.65rem; font-weight: 600; padding: 0.1rem 0.35rem; border-radius: 4px;
+  margin-right: 0.35rem; text-transform: uppercase;
+}
+.session-picker-badge.badge-owner { background: var(--accent-bg); color: var(--accent); }
+.session-picker-badge.badge-shared { background: rgba(59, 130, 246, 0.12); color: var(--blue); }
+.session-picker-by { font-size: 0.75rem; color: var(--muted); margin-right: 0.35rem; }
+

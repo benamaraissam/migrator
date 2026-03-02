@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Migrator.Application.Contracts;
 using Migrator.Application.DTOs;
@@ -8,6 +9,7 @@ namespace Migrator.API.Controllers;
 
 [ApiController]
 [Route("api")]
+[Authorize] // When Azure AD is configured (UseAuthorization in Program), all actions require a valid JWT. When not configured, this is not enforced.
 public class MappingController : ControllerBase
 {
     private readonly IMapSchemaService _mapSchemaService;
