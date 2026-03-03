@@ -3,7 +3,7 @@ import { provideRouter } from '@angular/router';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 import { HTTP_INTERCEPTORS } from '@angular/common/http';
 
-import { routes } from './app.routes';
+import { buildRoutes } from './app.routes';
 import { isMsalEnabled, msalConfig, protectedResourceMap } from './core/auth/msal-config';
 import { IPublicClientApplication, PublicClientApplication, InteractionType } from '@azure/msal-browser';
 import { MSAL_INSTANCE, MSAL_GUARD_CONFIG, MSAL_INTERCEPTOR_CONFIG, MsalService, MsalGuard, MsalInterceptor, MsalBroadcastService } from '@azure/msal-angular';
@@ -44,7 +44,7 @@ export function appConfig(): ApplicationConfig {
   return {
     providers: [
       provideZoneChangeDetection({ eventCoalescing: true }),
-      provideRouter(routes),
+      provideRouter(buildRoutes()),
       provideHttpClient(withInterceptorsFromDi()),
       ...msalProviders
     ]
