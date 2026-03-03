@@ -27,24 +27,26 @@ function msalInterceptorConfigFactory() {
   };
 }
 
-const msalProviders = isMsalEnabled()
-  ? [
-      { provide: MSAL_INSTANCE, useFactory: msalInstanceFactory },
-      { provide: APP_INITIALIZER, useFactory: msalInitFactory, deps: [MSAL_INSTANCE], multi: true },
-      { provide: MSAL_GUARD_CONFIG, useFactory: msalGuardConfigFactory },
-      { provide: MSAL_INTERCEPTOR_CONFIG, useFactory: msalInterceptorConfigFactory },
-      { provide: HTTP_INTERCEPTORS, useClass: MsalInterceptor, multi: true },
-      MsalBroadcastService,
-      MsalService,
-      MsalGuard
-    ]
-  : [];
+export function appConfig(): ApplicationConfig {
+  const msalProviders = isMsalEnabled()
+    ? [
+        { provide: MSAL_INSTANCE, useFactory: msalInstanceFactory },
+        { provide: APP_INITIALIZER, useFactory: msalInitFactory, deps: [MSAL_INSTANCE], multi: true },
+        { provide: MSAL_GUARD_CONFIG, useFactory: msalGuardConfigFactory },
+        { provide: MSAL_INTERCEPTOR_CONFIG, useFactory: msalInterceptorConfigFactory },
+        { provide: HTTP_INTERCEPTORS, useClass: MsalInterceptor, multi: true },
+        MsalBroadcastService,
+        MsalService,
+        MsalGuard
+      ]
+    : [];
 
-export const appConfig: ApplicationConfig = {
-  providers: [
-    provideZoneChangeDetection({ eventCoalescing: true }),
-    provideRouter(routes),
-    provideHttpClient(withInterceptorsFromDi()),
-    ...msalProviders
-  ]
-};
+  return {
+    providers: [
+      provideZoneChangeDetection({ eventCoalescing: true }),
+      provideRouter(routes),
+      provideHttpClient(withInterceptorsFromDi()),
+      ...msalProviders
+    ]
+  };
+}

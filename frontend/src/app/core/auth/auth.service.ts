@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { MsalService } from '@azure/msal-angular';
 import { isMsalEnabled } from './msal-config';
-import { environment } from '../../../environments/environment';
+import { AppConfig } from '../config/app-config';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
@@ -35,7 +35,7 @@ export class AuthService {
     const accounts = this.msal.instance.getAllAccounts();
     const account = accounts[0];
     if (!account) return null;
-    const apiScope = environment.msal?.apiScope;
+    const apiScope = AppConfig.settings.msal?.apiScope;
     if (!apiScope) return null;
     try {
       const result = await this.msal.instance.acquireTokenSilent({ scopes: [apiScope], account });

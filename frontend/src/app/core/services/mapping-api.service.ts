@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, from, of } from 'rxjs';
 import { switchMap, catchError } from 'rxjs/operators';
-import { environment } from '../../../environments/environment';
+import { AppConfig } from '../config/app-config';
 import { MsalService } from '@azure/msal-angular';
 import { getApiScopes } from '../auth/msal-config';
 
@@ -51,7 +51,7 @@ export interface RefineMappingResponse {
 
 @Injectable({ providedIn: 'root' })
 export class MappingApiService {
-  private readonly baseUrl = environment.apiUrl;
+  private readonly baseUrl = AppConfig.settings.apiUrl;
   private readonly msal = inject(MsalService, { optional: true });
 
   constructor(private http: HttpClient) {}

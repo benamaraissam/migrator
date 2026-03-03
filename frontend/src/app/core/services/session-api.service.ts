@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { environment } from '../../../environments/environment';
+import { AppConfig } from '../config/app-config';
 
 export interface SessionListItem {
   id: string;
@@ -72,20 +72,22 @@ export interface SessionUpdateDto {
   rules?: { name: string; content: string }[];
 }
 
-const baseUrl = `${environment.apiUrl || ''}/api`;
-
 @Injectable({ providedIn: 'root' })
 export class SessionApiService {
   constructor(private http: HttpClient) {}
 
+  private get baseUrl(): string {
+    return `${AppConfig.settings.apiUrl || ''}/api`;
+  }
+
   private options = { withCredentials: true };
 
   list(): Observable<SessionListItem[]> {
-    return this.http.get<SessionListItem[]>(`${baseUrl}/sessions`, this.options);
+    return this.http.get<SessionListItem[]>(`${this.baseUrl}/sessions`, this.options);
   }
 
   get(id: string): Observable<SessionDetail> {
-    return this.http.get<SessionDetail>(`${baseUrl}/sessions/${id}`, this.options);
+    return this.http.get<SessionDetail>(`${this.baseUrl}/sessions/${id}`, this.options);
   }
 
   create(dto: SessionCreateDto): Observable<SessionListItem> {
@@ -97,7 +99,7 @@ export class SessionApiService {
       current_mapping: dto.current_mapping ?? null,
       rules: dto.rules,
     };
-    return this.http.post<SessionListItem>(`${baseUrl}/sessions`, body, this.options);
+    return this.http.post<SessionListItem>(`${this.baseUrl}/sessions`, body, this.options);
   }
 
   update(id: string, dto: SessionUpdateDto): Observable<SessionListItem> {
@@ -109,26 +111,26 @@ export class SessionApiService {
       current_mapping: dto.current_mapping ?? null,
       rules: dto.rules,
     };
-    return this.http.put<SessionListItem>(`${baseUrl}/sessions/${id}`, body, this.options);
+    return this.http.put<SessionListItem>(`${this.baseUrl}/sessions/${id}`, body, this.options);
   }
 
   delete(id: string): Observable<void> {
-    return this.http.delete<void>(`${baseUrl}/sessions/${id}`, this.options);
+    return this.http.delete<void>(`${this.baseUrl}/sessions/${id}`, this.options);
   }
 
   shareSession(id: string, sharedWithUserIds: string[], role: string = 'viewer', displayNames?: Record<string, string>): Observable<void> {
     const body: { shared_with_user_ids: string[]; role: string; display_names?: Record<string, string> } = { shared_with_user_ids: sharedWithUserIds, role };
     if (displayNames && Object.keys(displayNames).length) body.display_names = displayNames;
-    return this.http.post<void>(`${baseUrl}/sessions/${id}/share`, body, this.options);
+    return this.http.post<void>(`${this.baseUrl}/sessions/${id}/share`, body, this.options);
   }
 
   unshareSession(id: string, sharedWithUserId: string): Observable<void> {
-    return this.http.delete<void>(`${baseUrl}/sessions/${id}/share/${encodeURIComponent(sharedWithUserId)}`, this.options);
+    return this.http.delete<void>(`${this.baseUrl}/sessions/${id}/share/${encodeURIComponent(sharedWithUserId)}`, this.options);
   }
 
   /** Known users (with display names) for share suggestions. Optional q= prefix filter. */
   getSuggestedUsers(q?: string): Observable<{ users: { user_id: string; display_name?: string }[] }> {
     const options = q != null && q !== '' ? { ...this.options, params: { q } } : this.options;
-    return this.http.get<{ users: { user_id: string; display_name?: string }[] }>(`${baseUrl}/users`, options);
+    return this.http.get<{ users: { user_id: string; display_name?: string }[] }>(`${this.baseUrl}/users`, options);
   }
 }
